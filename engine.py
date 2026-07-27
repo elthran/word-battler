@@ -220,6 +220,54 @@ class GameEngine:
             return ""
         return self.current_encounter.get("name", "")
 
+    def get_highest_letter(self) -> str | None:
+        """Return the highest-point letter in the hand for 'Use Highest Letter' modifier, or None."""
+        enc = self.current_encounter
+        if enc is None:
+            return None
+        modifier_key = enc.get("modifier")
+        if modifier_key not in ("must_use_highest", "boss_highest_length"):
+            return None
+        highest_letter = None
+        highest_value = -1
+        for card in self._hand:
+            val = LETTER_VALUES.get(card, 0)
+            if val > highest_value:
+                highest_value = val
+                highest_letter = card
+        return highest_letter
+
+    def get_red_highlight_letters(self, current_word: str) -> set[str]:
+        """Return the set of letters in the hand that should glow red,
+        based on the current modifier and word-building state."""
+        red: set[str] = set()
+        enc = self.current_encounter
+        if enc is None:
+            return red
+        modifier_key = enc.get("modifier", "")
+
+        # "Use Highest Letter" — always highlight the highest-point letter
+        if modifier_key in ("must_use_highest", "boss_highest_length"):
+            hl = self.get_highest_letter()
+            if hl:
+                red.add(hl)
+
+        # "No Vowel Start" — highlight vowels when word is empty
+        if modifier_key in ("no_vowel_start", "boss_vowel_double"):
+            if not current_word:
+                vowels = {"a", "e", "i", "o", "u"}
+                for card in self._hand:
+                    if card in vowels:
+                        red.add(card)
+
+        # "No Wildcards" — highlight wildcards
+        if modifier_key == "no_wildcards":
+            for card in self._hand:
+                if card == '*':
+                    red.add(card)
+
+        return red
+
     def check_modifier_preview(self, word: str) -> dict:
         """
         Check the current encounter's modifier against a *word* without
@@ -424,6 +472,8 @@ class GameEngine:
     def calculate_score(self, word: str) -> int:
         """Return the point value of *word*, applying archetype & accessory bonuses."""
         w = word.lower()
+        # Resolve wildcards for vowel/consonant checks; fall back to raw word
+        rw = self._resolve_wildcards(w) or w
         total = 0
         for ch in w:
             if ch == '*':
@@ -440,9 +490,8 @@ class GameEngine:
         # double_letter: two of the same letter → +2
         if "double_letter" in self._accessories:
             letter_counts: dict[str, int] = {}
-            for ch in w:
-                if ch != '*':
-                    letter_counts[ch] = letter_counts.get(ch, 0) + 1
+            for ch in rw:
+                letter_counts[ch] = letter_counts.get(ch, 0) + 1
             for count in letter_counts.values():
                 if count >= 2:
                     total += 2
@@ -450,19 +499,19 @@ class GameEngine:
         # vowel_bonus: 2+ vowels → +1
         if "vowel_bonus" in self._accessories:
             vowels = set("aeiou")
-            vowel_count = sum(1 for ch in w if ch in vowels)
+            vowel_count = sum(1 for ch in rw if ch in vowels)
             if vowel_count >= 2:
                 total += 1
 
         # long_word: 5+ letters → +3
         if "long_word" in self._accessories:
-            if len(w) >= 5:
+            if len(rw) >= 5:
                 total += 3
 
         # consonant_bonus: 3+ consonants → +2
         if "consonant_bonus" in self._accessories:
             vowels = set("aeiou")
-            consonant_count = sum(1 for ch in w if ch not in vowels and ch != '*')
+            consonant_count = sum(1 for ch in rw if ch not in vowels)
             if consonant_count >= 3:
                 total += 2
 
@@ -471,22 +520,23 @@ class GameEngine:
     def check_accessory_active(self, acc_key: str, word: str) -> bool:
         """Return True if the accessory *acc_key* would activate for *word*."""
         w = word.lower()
+        # Resolve wildcards for vowel/consonant checks; fall back to raw word
+        rw = self._resolve_wildcards(w) or w
         if acc_key == "wildcard_plus":
             return '*' in w
         if acc_key == "double_letter":
             letter_counts: dict[str, int] = {}
-            for ch in w:
-                if ch != '*':
-                    letter_counts[ch] = letter_counts.get(ch, 0) + 1
+            for ch in rw:
+                letter_counts[ch] = letter_counts.get(ch, 0) + 1
             return any(c >= 2 for c in letter_counts.values())
         if acc_key == "vowel_bonus":
             vowels = set("aeiou")
-            return sum(1 for ch in w if ch in vowels) >= 2
+            return sum(1 for ch in rw if ch in vowels) >= 2
         if acc_key == "long_word":
-            return len(w) >= 5
+            return len(rw) >= 5
         if acc_key == "consonant_bonus":
             vowels = set("aeiou")
-            return sum(1 for ch in w if ch not in vowels and ch != '*') >= 3
+            return sum(1 for ch in rw if ch not in vowels) >= 3
         if acc_key == "extra_draw":
             return True  # always active
         if acc_key == "vitality_core":

@@ -108,6 +108,7 @@ class CardButton:
         self.selected = False
         self.rect = pygame.Rect(0, 0, CARD_W, CARD_H)
         self.highlight: str | None = None  # "gold" or "red" or None
+        self.chosen_letter: str = ""       # the actual letter chosen for a wildcard
 
     def handle_event(self, event: pygame.event.Event) -> bool:
         """Return ``True`` if clicked."""
@@ -118,28 +119,48 @@ class CardButton:
 
     def draw(self, screen: pygame.Surface, font: pygame.font.Font,
              small_font: pygame.font.Font):
-        bg = CARD_SELECTED if self.selected else CARD_COLOR
         y_offset = -8 if self.selected else 0
         r = self.rect.move(0, y_offset)
-        pygame.draw.rect(screen, bg, r, border_radius=6)
-        if self.highlight == "gold":
-            border_c = ACCENT_COLOR
-        elif self.highlight == "red":
+
+        if self.highlight == "red":
+            bg = CARD_COLOR
             border_c = DANGER_COLOR
-        elif self.letter == '*':
-            border_c = WILDCARD_COLOR
-        else:
+            border_w = 3
+        elif self.selected:
+            bg = CARD_SELECTED
             border_c = CARD_BORDER
-        pygame.draw.rect(screen, border_c, r, width=2, border_radius=6)
+            border_w = 2
+        elif self.highlight == "gold":
+            bg = CARD_COLOR
+            border_c = ACCENT_COLOR
+            border_w = 2
+        elif self.letter == '*':
+            bg = CARD_COLOR
+            border_c = WILDCARD_COLOR
+            border_w = 2
+        else:
+            bg = CARD_COLOR
+            border_c = CARD_BORDER
+            border_w = 2
+
+        pygame.draw.rect(screen, bg, r, border_radius=6)
+        pygame.draw.rect(screen, border_c, r, width=border_w, border_radius=6)
+
+        # Red glow overlay — semi-transparent red on top of the card
+        if self.highlight == "red":
+            glow = pygame.Surface((r.width, r.height), pygame.SRCALPHA)
+            glow.fill((220, 40, 40, 60))  # bright red, ~24% opacity
+            screen.blit(glow, (r.x, r.y))
 
         # letter
-        letter_surf = font.render(self.letter.upper(), True, (20, 20, 30))
+        display_letter = self.chosen_letter.upper() if self.selected and self.chosen_letter else self.letter.upper()
+        letter_surf = font.render(display_letter, True, (20, 20, 30))
         lx = r.centerx - letter_surf.get_width() // 2
         ly = r.centery - letter_surf.get_height() // 2 - 4
         screen.blit(letter_surf, (lx, ly))
 
         # point value
-        pts = LETTER_VALUES.get(self.letter, 0)
+        pts = LETTER_VALUES.get(self.chosen_letter if self.selected and self.chosen_letter else self.letter, 0)
         pt_surf = small_font.render(str(pts), True, (80, 80, 100))
         px = r.right - pt_surf.get_width() - 6
         py = r.bottom - pt_surf.get_height() - 4
@@ -325,6 +346,8 @@ class App:
         self._preview_data: dict | None = None   # cached API result from preview
         self._preview_word: str = ""             # the word that was previewed
         self._loading: bool = False              # True while waiting for API response
+        self._wildcard_prompt: bool = False      # True while waiting for wildcard letter input
+        self._wildcard_card_index: int = -1      # which card triggered the wildcard prompt
 
         # Potions & accessories
         self._potion_buttons: list[PotionButton] = []
@@ -459,10 +482,10 @@ class App:
             for approach, btn in self._approach_buttons:
                 if btn.rect.collidepoint(event.pos):
                     req = self.engine.choose_approach(approach)
+                    self._current_word = []
                     self._build_card_buttons()
                     self._build_potion_buttons()
                     self._build_accessory_icons()
-                    self._current_word = []
                     self._error_message = ""
                     self.state = GameState.PLAY_WORD
 
@@ -548,6 +571,17 @@ class App:
         for i, letter in enumerate(hand):
             cb = CardButton(letter, i)
             self._card_buttons.append(cb)
+        self._refresh_card_highlights()
+
+    def _refresh_card_highlights(self):
+        """Update card highlights based on the current modifier and word."""
+        word = "".join(self._current_word)
+        red_letters = self.engine.get_red_highlight_letters(word)
+        for cb in self._card_buttons:
+            if cb.letter in red_letters:
+                cb.highlight = "red"
+            else:
+                cb.highlight = None
 
     def _build_potion_buttons(self):
         """Rebuild potion buttons from the engine's current potions."""
@@ -596,6 +630,26 @@ class App:
             ai.rect.y = y
 
     def _play_word_event(self, event: pygame.event.Event):
+        # Wildcard prompt: waiting for a single letter keypress
+        if self._wildcard_prompt:
+            if event.type == pygame.KEYDOWN:
+                if event.unicode.isalpha() and len(event.unicode) == 1:
+                    ch = event.unicode.lower()
+                    self._current_word.append('*')  # engine needs '*' for wildcards
+                    # Store the chosen letter on the specific wildcard card
+                    for cb in self._card_buttons:
+                        if cb.index == self._wildcard_card_index:
+                            cb.chosen_letter = ch
+                            break
+                    self._wildcard_prompt = False
+                    self._wildcard_card_index = -1
+                    self._error_message = ""
+                    self._preview_data = None
+                    self._preview_word = ""
+                return
+            # Ignore all other events while in wildcard prompt
+            return
+
         # card clicks
         for cb in self._card_buttons:
             if cb.handle_event(event):
@@ -604,13 +658,23 @@ class App:
                 if cb.selected:
                     # deselect
                     cb.selected = False
-                    self._current_word.remove(cb.letter)
+                    if cb.letter == '*':
+                        self._current_word.remove('*')
+                        cb.chosen_letter = ""
+                    else:
+                        self._current_word.remove(cb.letter)
+                elif cb.letter == '*':
+                    # Wildcard: prompt for a letter instead of adding '*'
+                    cb.selected = True
+                    self._wildcard_prompt = True
+                    self._wildcard_card_index = cb.index
                 else:
                     cb.selected = True
                     self._current_word.append(cb.letter)
                 self._error_message = ""
                 self._preview_data = None  # word changed, invalidate preview
                 self._preview_word = ""
+                self._refresh_card_highlights()
                 return
 
         # potion clicks
@@ -621,12 +685,13 @@ class App:
                 result = self.engine.use_potion(pb.index)
                 if result:
                     # Rebuild UI after potion use
+                    self._current_word = []
                     self._build_card_buttons()
                     self._build_potion_buttons()
-                    self._current_word = []
                     self._error_message = f"Used {result['name']}!"
                     self._preview_data = None
                     self._preview_word = ""
+                    self._wildcard_prompt = False
                 return
 
         # accessory hover
@@ -678,16 +743,18 @@ class App:
                 self._error_message = ""
                 self._preview_data = None
                 self._preview_word = ""
+                self._wildcard_prompt = False
+                self._refresh_card_highlights()
 
             # shuffle
             if self._shuffle_btn and self._shuffle_btn.rect.collidepoint(event.pos):
                 self.engine.shuffle_hand()
-                self._build_card_buttons()
-                # Deselect any selected cards since the hand changed
                 self._current_word = []
+                self._build_card_buttons()
                 self._error_message = ""
                 self._preview_data = None
                 self._preview_word = ""
+                self._wildcard_prompt = False
 
     def _draw_play_word(self):
         eng = self.engine
@@ -742,8 +809,24 @@ class App:
                     _draw_text_center(self.screen, mod_text, self.small_font,
                                       ACCENT_COLOR, info_y + 90)
 
-        # current word display
-        word_display = "".join(self._current_word).upper() if self._current_word else "___"
+        # current word display — show chosen letters for wildcards
+        if self._current_word:
+            # Collect chosen letters from selected wildcard cards
+            wild_choices: list[str] = []
+            for cb in self._card_buttons:
+                if cb.selected and cb.letter == '*' and cb.chosen_letter:
+                    wild_choices.append(cb.chosen_letter)
+            display_chars = []
+            wi = 0
+            for ch in self._current_word:
+                if ch == '*' and wi < len(wild_choices):
+                    display_chars.append(wild_choices[wi])
+                    wi += 1
+                else:
+                    display_chars.append(ch)
+            word_display = "".join(display_chars).upper()
+        else:
+            word_display = "___"
         word_color = ACCENT_COLOR if self._current_word else (100, 100, 120)
         _draw_text_center(self.screen, word_display, self.heading_font,
                           word_color, info_y + 130)
@@ -832,28 +915,13 @@ class App:
             _draw_text_center(self.screen, "Loading...", self.body_font,
                               ACCENT_COLOR, mod_y + mod_line_h * 3 + 30)
 
+        # wildcard prompt indicator
+        if self._wildcard_prompt:
+            _draw_text_center(self.screen, "Type a letter for the wildcard...",
+                              self.body_font, ACCENT_COLOR, mod_y + mod_line_h * 3 + 30)
+
         # ── cards (lower-middle, ~2/3 vertical) ──────────────────────
         self._layout_cards()
-
-        # Set card highlights based on encounter modifier
-        enc = eng.current_encounter
-        modifier_key = enc.get("modifier", "") if enc else ""
-        for cb in self._card_buttons:
-            cb.highlight = None
-        if modifier_key in ("must_use_highest", "boss_highest_length"):
-            # Find the highest-point letter in hand
-            highest_val = -1
-            for cb in self._card_buttons:
-                val = LETTER_VALUES.get(cb.letter, 0)
-                if val > highest_val:
-                    highest_val = val
-            for cb in self._card_buttons:
-                if LETTER_VALUES.get(cb.letter, 0) == highest_val:
-                    cb.highlight = "gold"
-        if modifier_key == "no_wildcards":
-            for cb in self._card_buttons:
-                if cb.letter == '*':
-                    cb.highlight = "red"
 
         for cb in self._card_buttons:
             cb.draw(self.screen, self.card_font, self.small_font)
@@ -1052,13 +1120,14 @@ class App:
             if eng.is_game_over:
                 self.state = GameState.GAME_OVER
             else:
+                self._current_word = []
                 self._build_card_buttons()
                 self._build_potion_buttons()
                 self._build_accessory_icons()
-                self._current_word = []
                 self._error_message = ""
                 self._preview_data = None
                 self._preview_word = ""
+                self._wildcard_prompt = False
                 self.state = GameState.PLAY_WORD
             return
 
