@@ -4,7 +4,7 @@ import sys
 from enum import Enum, auto
 import pygame
 from engine import GameEngine
-from data import LETTER_VALUES, ARCHETYPES, MAX_HP, POTIONS, ACCESSORIES
+from data import LETTER_VALUES, ARCHETYPES, MAX_HP, POTIONS, ACCESSORIES, MODIFIERS, BOSS_MODIFIERS, ENCOUNTERS_BEFORE_BOSS
 
 # ── Constants ───────────────────────────────────────────────────────────────
 WINDOW_W, WINDOW_H = 1500, 800
@@ -451,7 +451,7 @@ class App:
 
         # encounter counter
         total = eng.encounters_cleared + 1
-        max_total = eng.encounters_cleared + len(eng._encounter_queue) + 1
+        max_total = ENCOUNTERS_BEFORE_BOSS + 1
         enc_text = f"Encounter {total}/{max_total}"
         _draw_text_center(self.screen, enc_text, self.small_font, TEXT_COLOR, 40)
 
@@ -467,11 +467,23 @@ class App:
         # encounter name & flavor
         enc = eng.current_encounter
         rd = eng.current_round_data
-        _draw_text_center(self.screen, enc["name"], self.heading_font,
-                          ACCENT_COLOR, 150)
+        enc_name = eng.encounter_name
+        _draw_text_center(self.screen, f"Blocked by a {enc_name}",
+                          self.heading_font, ACCENT_COLOR, 150)
         if rd:
             _draw_text_center(self.screen, rd["flavor"], self.body_font,
                               TEXT_COLOR, 210)
+
+        # modifier display
+        modifier_key = enc.get("modifier")
+        if modifier_key:
+            mod = BOSS_MODIFIERS.get(modifier_key) or MODIFIERS.get(modifier_key)
+            if mod:
+                mod_text = f"⚡ Modifier: {mod['name']}"
+                _draw_text_center(self.screen, mod_text, self.small_font,
+                                  ACCENT_COLOR, 250)
+                _draw_text_center(self.screen, mod['description'], self.small_font,
+                                  (200, 200, 220), 275)
 
         # approach buttons
         if rd:
@@ -590,11 +602,8 @@ class App:
 
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             # submit
-            if self._submit_btn and self._submit_btn.rect.collidepoint(event.pos):
+            if self._submit_btn and not self._submit_btn.disabled and self._submit_btn.rect.collidepoint(event.pos):
                 word = "".join(self._current_word)
-                if len(word) == 0:
-                    self._error_message = "Choose at least one letter!"
-                    return
                 self._result_data = self.engine.play_word(word)
                 self._result_timer = 2500  # ms
                 self.state = GameState.RESULT
@@ -624,6 +633,12 @@ class App:
         # ── info text (upper-middle, ~1/3 vertical) ──────────────────
         info_y = WINDOW_H // 3
 
+        # encounter name
+        enc_name = eng.encounter_name
+        if enc_name:
+            _draw_text_center(self.screen, f"Blocked by a {enc_name}",
+                              self.body_font, ACCENT_COLOR, info_y - 60)
+
         # requirement
         req_text = f"Requirement: {eng.current_requirement} pts"
         _draw_text_center(self.screen, req_text, self.body_font, ACCENT_COLOR, info_y)
@@ -637,25 +652,58 @@ class App:
         prompt = rd["prompt"] if rd else "Choose your word..."
         _draw_text_center(self.screen, prompt, self.body_font, TEXT_COLOR, info_y + 60)
 
+        # modifier reminder
+        enc = eng.current_encounter
+        if enc:
+            modifier_key = enc.get("modifier")
+            if modifier_key:
+                mod = BOSS_MODIFIERS.get(modifier_key) or MODIFIERS.get(modifier_key)
+                if mod:
+                    mod_text = f"⚡ {mod['name']}"
+                    _draw_text_center(self.screen, mod_text, self.small_font,
+                                      ACCENT_COLOR, info_y + 90)
+
         # current word display
         word_display = "".join(self._current_word).upper() if self._current_word else "___"
         word_color = ACCENT_COLOR if self._current_word else (100, 100, 120)
         _draw_text_center(self.screen, word_display, self.heading_font,
-                          word_color, info_y + 120)
+                          word_color, info_y + 130)
 
         # live score preview
+        modifier_violated = False
+        modifier_penalty = 0
+        modifier_type = None
+        modifier_detail = ""
         if self._current_word:
-            preview_score = eng.calculate_score("".join(self._current_word))
+            word_str = "".join(self._current_word)
+            preview_score = eng.calculate_score(word_str)
             req = eng.current_requirement
-            score_text = f"Score: {preview_score} pts / {req} pts"
-            score_color = SUCCESS_COLOR if preview_score >= req else DANGER_COLOR
+            # Check modifier for preview
+            mod_result = eng.check_modifier_preview(word_str)
+            modifier_violated = mod_result["violated"]
+            modifier_penalty = mod_result["penalty"] if modifier_violated else 0
+            modifier_type = mod_result.get("type")
+            modifier_detail = mod_result.get("detail", "")
+
+            if modifier_violated and modifier_type == "blocking":
+                # Blocking rules: show score without penalty, don't show (-X mod)
+                effective_preview = preview_score
+                score_text = f"Score: {effective_preview} pts / {req} pts"
+                score_color = SUCCESS_COLOR if effective_preview >= req else DANGER_COLOR
+            else:
+                # Penalty modifiers: show effective score with penalty
+                effective_preview = max(0, preview_score - modifier_penalty)
+                score_text = f"Score: {effective_preview} pts / {req} pts"
+                if modifier_violated:
+                    score_text += f"  (-{modifier_penalty} mod)"
+                score_color = SUCCESS_COLOR if effective_preview >= req else DANGER_COLOR
             _draw_text_center(self.screen, score_text, self.small_font,
-                              score_color, info_y + 165)
+                              score_color, info_y + 175)
 
         # error message
         if self._error_message:
             _draw_text_center(self.screen, self._error_message, self.body_font,
-                              DANGER_COLOR, info_y + 170)
+                              DANGER_COLOR, info_y + 180)
 
         # ── cards (lower-middle, ~2/3 vertical) ──────────────────────
         self._layout_cards()
@@ -665,9 +713,11 @@ class App:
         # submit / clear buttons (just below cards)
         card_y = WINDOW_H * 2 // 3 - CARD_H // 2
         btn_y = card_y + CARD_H + 10
+        submit_disabled = len(self._current_word) == 0 or (modifier_violated and modifier_type == "blocking")
         self._submit_btn = Button(
             pygame.Rect(WINDOW_W // 2 + 20, btn_y, 160, 48),
             "Submit Word", self.small_font,
+            disabled=submit_disabled,
         )
         self._clear_btn = Button(
             pygame.Rect(WINDOW_W // 2 - 180, btn_y, 160, 48),
@@ -675,6 +725,12 @@ class App:
         )
         self._submit_btn.draw(self.screen)
         self._clear_btn.draw(self.screen)
+
+        # reason text below submit button when blocked
+        if submit_disabled and modifier_detail:
+            reason_text = modifier_detail
+            _draw_text_center(self.screen, reason_text, self.small_font,
+                              DANGER_COLOR, btn_y + 56)
 
         # potions (bottom-right)
         self._layout_potions()
@@ -727,15 +783,23 @@ class App:
                 y += 36
 
             # score line
+            effective_score = data.get("effective_score", score)
             if data["round_success"]:
                 _draw_text_center(self.screen,
-                                  f"Score: {score}/{req}  —  No damage!",
+                                  f"Score: {effective_score}/{req}  —  No damage!",
                                   self.body_font, SUCCESS_COLOR, y)
             else:
                 dmg = data["damage_to_player"]
                 _draw_text_center(self.screen,
-                                  f"Score: {score}/{req}  —  Took {dmg} damage!",
+                                  f"Score: {effective_score}/{req}  —  Took {dmg} damage!",
                                   self.body_font, DANGER_COLOR, y)
+            y += 36
+
+            # modifier violation message
+            if data.get("modifier_violated"):
+                _draw_text_center(self.screen, data["modifier_message"],
+                                  self.small_font, ACCENT_COLOR, y)
+                y += 30
 
         _draw_text_center(self.screen, "Click to continue...", self.small_font,
                           (160, 160, 180), 320)

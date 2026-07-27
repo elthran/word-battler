@@ -24,7 +24,7 @@ STARTING_DECK: list[str] = [
 # ── Game rules ──────────────────────────────────────────────────────────────
 HAND_SIZE: int = 8
 MAX_HP: int = 5
-ENCOUNTERS_BEFORE_BOSS: int = 2   # 2 normal encounters, then the boss
+ENCOUNTERS_BEFORE_BOSS: int = 3   # 3 normal encounters, then the boss
 ROUNDS_PER_ENCOUNTER: int = 3
 
 # ── Archetypes ───────────────────────────────────────────────────────────────
@@ -52,13 +52,72 @@ ARCHETYPES: dict[str, dict] = {
     },
 }
 
+# ── Modifiers ────────────────────────────────────────────────────────────────
+# Each modifier has: name, description, penalty (score reduction when violated).
+# The modifier key is stored on each encounter.
+
+MODIFIERS: dict[str, dict] = {
+    "no_vowel_start": {
+        "name": "No Vowel Start",
+        "description": "Your word cannot start with a vowel (a, e, i, o, u).",
+        "type": "blocking",
+        "penalty": 2,
+    },
+    "no_double_letters": {
+        "name": "No Double Letters",
+        "description": "You cannot use the same letter twice in your word.",
+        "type": "blocking",
+        "penalty": 2,
+    },
+    "must_use_highest": {
+        "name": "Use Highest Letter",
+        "description": "You must include the highest-point letter from your hand.",
+        "type": "blocking",
+        "penalty": 2,
+    },
+    "min_length_4": {
+        "name": "Minimum Length 4",
+        "description": "Your word must be at least 4 letters long.",
+        "type": "blocking",
+        "penalty": 2,
+    },
+    "no_wildcards": {
+        "name": "No Wildcards",
+        "description": "You cannot use wildcard (*) cards in your word.",
+        "type": "blocking",
+        "penalty": 2,
+    },
+    "must_use_two_vowels": {
+        "name": "Two Vowels Required",
+        "description": "Your word must contain at least 2 vowels (a, e, i, o, u).",
+        "type": "blocking",
+        "penalty": 2,
+    },
+}
+
+BOSS_MODIFIERS: dict[str, dict] = {
+    "boss_vowel_double": {
+        "name": "No Vowel Start + No Doubles",
+        "description": "Your word cannot start with a vowel AND cannot repeat any letter.",
+        "type": "blocking",
+        "penalty": 3,
+    },
+    "boss_highest_length": {
+        "name": "Use Highest + Min Length 5",
+        "description": "You must use the highest-point letter AND your word must be 5+ letters.",
+        "type": "blocking",
+        "penalty": 3,
+    },
+}
+
 # ── Encounters ──────────────────────────────────────────────────────────────
-# Each encounter has a "name" and a "rounds" list (one dict per round).
+# Each encounter has a "name", a "modifier" key, and a "rounds" list.
 # Each round dict has: flavor, prompt, aggressive, charisma, intelligence.
 
 ENCOUNTER_POOL: list[dict] = [
     {
         "name": "Goblin",
+        "modifier": "no_vowel_start",
         "rounds": [
             {
                 "flavor": "A grimy goblin blocks the path, clutching a rusty dagger. It snarls and lunges at you!",
@@ -79,6 +138,7 @@ ENCOUNTER_POOL: list[dict] = [
     },
     {
         "name": "Skeleton",
+        "modifier": "no_double_letters",
         "rounds": [
             {
                 "flavor": "A rattling skeleton rises from a pile of bones, hollow eyes fixed on you. It clatters forward.",
@@ -99,6 +159,7 @@ ENCOUNTER_POOL: list[dict] = [
     },
     {
         "name": "Dark Mage",
+        "modifier": "must_use_highest",
         "rounds": [
             {
                 "flavor": "A hooded mage crackles with dark energy, muttering an incantation. Purple lightning arcs from their fingertips.",
@@ -119,6 +180,7 @@ ENCOUNTER_POOL: list[dict] = [
     },
     {
         "name": "Troll",
+        "modifier": "min_length_4",
         "rounds": [
             {
                 "flavor": "A hulking troll lumbers toward you, club dragging on the ground. Each step shakes the earth.",
@@ -139,6 +201,7 @@ ENCOUNTER_POOL: list[dict] = [
     },
     {
         "name": "Bandit",
+        "modifier": "no_wildcards",
         "rounds": [
             {
                 "flavor": "A masked bandit leaps from the shadows, a curved dagger glinting. 'Your gold or your life!'",
@@ -157,28 +220,94 @@ ENCOUNTER_POOL: list[dict] = [
             },
         ],
     },
+    {
+        "name": "Spider",
+        "modifier": "must_use_two_vowels",
+        "rounds": [
+            {
+                "flavor": "A massive spider drops from the ceiling, its many eyes glistening. It skitters toward you with terrifying speed.",
+                "prompt": "You brace yourself and [ ______ ] the spider.",
+                "aggressive": 7, "charisma": 6, "intelligence": 8,
+            },
+            {
+                "flavor": "The spider scuttles up the wall and leaps at your face! Venom drips from its fangs.",
+                "prompt": "You dodge aside and [ ______ ] the spider.",
+                "aggressive": 8, "charisma": 7, "intelligence": 6,
+            },
+            {
+                "flavor": "Wounded but furious, the spider spins a web strand and swings straight at you, fangs bared.",
+                "prompt": "With quick reflexes, you [ ______ ] the spider.",
+                "aggressive": 6, "charisma": 8, "intelligence": 7,
+            },
+        ],
+    },
+    {
+        "name": "Ghost",
+        "modifier": "no_vowel_start",
+        "rounds": [
+            {
+                "flavor": "A wailing ghost drifts through the wall, its translucent form flickering. An icy chill fills the air.",
+                "prompt": "You steel your nerves and [ ______ ] the ghost.",
+                "aggressive": 8, "charisma": 7, "intelligence": 6,
+            },
+            {
+                "flavor": "The ghost lets out a piercing shriek that rattles your bones. It phases through your guard!",
+                "prompt": "You focus your will and [ ______ ] the ghost.",
+                "aggressive": 6, "charisma": 8, "intelligence": 7,
+            },
+            {
+                "flavor": "The ghost gathers dark energy into a spectral orb, its form flickering between rage and sorrow.",
+                "prompt": "You stand tall and [ ______ ] the ghost.",
+                "aggressive": 7, "charisma": 6, "intelligence": 8,
+            },
+        ],
+    },
 ]
 
-BOSS_ENCOUNTER: dict = {
-    "name": "Dragon",
-    "rounds": [
-        {
-            "flavor": "The ground shakes. A massive red dragon descends, smoke curling from its nostrils. It fixes its burning gaze on you.",
-            "prompt": "With everything on the line, you [ ______ ] the dragon.",
-            "aggressive": 12, "charisma": 10, "intelligence": 11,
-        },
-        {
-            "flavor": "The dragon rears back, inhaling deeply. Flames gather in its throat — it's about to breathe fire!",
-            "prompt": "You dive for cover and [ ______ ] the dragon.",
-            "aggressive": 11, "charisma": 12, "intelligence": 10,
-        },
-        {
-            "flavor": "The dragon's wings are tattered, its breath ragged. It lets out a deafening roar and lunges with claws bared.",
-            "prompt": "This is it. You [ ______ ] the dragon.",
-            "aggressive": 10, "charisma": 11, "intelligence": 12,
-        },
-    ],
-}
+BOSS_POOL: list[dict] = [
+    {
+        "name": "Dragon",
+        "modifier": "boss_vowel_double",
+        "rounds": [
+            {
+                "flavor": "The ground shakes. A massive red dragon descends, smoke curling from its nostrils. It fixes its burning gaze on you.",
+                "prompt": "With everything on the line, you [ ______ ] the dragon.",
+                "aggressive": 12, "charisma": 10, "intelligence": 11,
+            },
+            {
+                "flavor": "The dragon rears back, inhaling deeply. Flames gather in its throat — it's about to breathe fire!",
+                "prompt": "You dive for cover and [ ______ ] the dragon.",
+                "aggressive": 11, "charisma": 12, "intelligence": 10,
+            },
+            {
+                "flavor": "The dragon's wings are tattered, its breath ragged. It lets out a deafening roar and lunges with claws bared.",
+                "prompt": "This is it. You [ ______ ] the dragon.",
+                "aggressive": 10, "charisma": 11, "intelligence": 12,
+            },
+        ],
+    },
+    {
+        "name": "Lich King",
+        "modifier": "boss_highest_length",
+        "rounds": [
+            {
+                "flavor": "A throne of bones rises before you. Upon it sits the Lich King, crowned in frost. His hollow gaze pierces your soul.",
+                "prompt": "You raise your weapon and [ ______ ] the Lich King.",
+                "aggressive": 11, "charisma": 12, "intelligence": 10,
+            },
+            {
+                "flavor": "The Lich King raises a skeletal hand. Ice shards form in the air, each one aimed at your heart.",
+                "prompt": "You weave between the shards and [ ______ ] the Lich King.",
+                "aggressive": 12, "charisma": 10, "intelligence": 11,
+            },
+            {
+                "flavor": "The Lich King descends from his throne, a blade of frozen shadow in his grip. The air itself freezes around you.",
+                "prompt": "With a final cry, you [ ______ ] the Lich King.",
+                "aggressive": 10, "charisma": 11, "intelligence": 12,
+            },
+        ],
+    },
+]
 
 # ── Potions ──────────────────────────────────────────────────────────────────
 # One-time-use items.  Key → {name, description, effect}

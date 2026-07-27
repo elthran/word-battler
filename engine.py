@@ -5,7 +5,8 @@ import os
 from data import (
     LETTER_VALUES, STARTING_DECK, HAND_SIZE, MAX_HP,
     ENCOUNTERS_BEFORE_BOSS, ROUNDS_PER_ENCOUNTER, ARCHETYPES,
-    ENCOUNTER_POOL, BOSS_ENCOUNTER,
+    ENCOUNTER_POOL, BOSS_POOL,
+    MODIFIERS, BOSS_MODIFIERS,
     POTIONS, POTION_KEYS, ACCESSORIES, ACCESSORY_KEYS,
 )
 
@@ -76,11 +77,12 @@ class GameEngine:
     # ── Encounter queue ──────────────────────────────────────────────────
 
     def _build_encounter_queue(self):
-        """Shuffle the pool, take the first N, then append the boss."""
+        """Shuffle the pool, take the first N, then append a random boss."""
         pool = list(ENCOUNTER_POOL)
         random.shuffle(pool)
         self._encounter_queue = pool[:ENCOUNTERS_BEFORE_BOSS]
-        self._encounter_queue.append(BOSS_ENCOUNTER)
+        boss = random.choice(BOSS_POOL)
+        self._encounter_queue.append(dict(boss))  # copy so we don't mutate the pool
 
     # ── Potions ──────────────────────────────────────────────────────────
 
@@ -189,6 +191,22 @@ class GameEngine:
             return rounds[idx]
         return None
 
+    @property
+    def encounter_name(self) -> str:
+        """Return the name of the current encounter."""
+        if self.current_encounter is None:
+            return ""
+        return self.current_encounter.get("name", "")
+
+    def check_modifier_preview(self, word: str) -> dict:
+        """
+        Check the current encounter's modifier against a *word* without
+        any side effects.  Returns the same shape as ``_check_modifier``::
+
+            {"violated": bool, "penalty": int, "message": str, "type": str}
+        """
+        return self._check_modifier(word, word)
+
     # ── Encounter flow ───────────────────────────────────────────────────
 
     def next_encounter(self) -> dict | None:
@@ -280,8 +298,24 @@ class GameEngine:
         # 3.  Score
         score = self.calculate_score(w)
 
-        # 4.  Damage
-        damage = max(0, self.current_requirement - score)
+        # 3b. Modifier check — blocking modifiers reject the word outright
+        modifier_result = self._check_modifier(w, resolved)
+        if modifier_result["violated"] and modifier_result.get("type") == "blocking":
+            self.hp = max(0, self.hp - 1)
+            return {
+                "valid": False, "error": modifier_result["message"],
+                "score": 0, "requirement": self.current_requirement,
+                "damage_to_player": 1, "resolved_word": None,
+                "round_success": False,
+                "narrative": f"Rule broken! {modifier_result['detail']} You take 1 damage and must try again.",
+            }
+
+        # 3c. Penalty modifiers reduce effective score
+        modifier_penalty = modifier_result["penalty"] if modifier_result["violated"] else 0
+        effective_score = max(0, score - modifier_penalty)
+
+        # 4.  Damage (based on effective score after modifier penalty)
+        damage = max(0, self.current_requirement - effective_score)
         self.hp = max(0, self.hp - damage)
 
         # 5.  Discard used cards & draw back to hand size
@@ -289,16 +323,20 @@ class GameEngine:
         self._draw_cards(self.hand_size - len(self._hand))
 
         # 6.  Track round success
-        round_success = score >= self.current_requirement
+        round_success = effective_score >= self.current_requirement
 
         # 7.  Generate narrative
         narrative = self._narrative_result(round_success, damage)
 
         return {
             "valid": True, "error": None,
-            "score": score, "requirement": self.current_requirement,
+            "score": score, "effective_score": effective_score,
+            "requirement": self.current_requirement,
             "damage_to_player": damage, "resolved_word": resolved,
             "round_success": round_success, "narrative": narrative,
+            "modifier_violated": modifier_result["violated"],
+            "modifier_penalty": modifier_penalty,
+            "modifier_message": modifier_result["message"],
         }
 
     def calculate_score(self, word: str) -> int:
@@ -408,6 +446,149 @@ class GameEngine:
 
         pool = lines.get(approach, lines["aggressive"])
         return random.choice(pool)
+
+    # ── Modifier check ──────────────────────────────────────────────────
+
+    def _check_modifier(self, word: str, resolved_word: str) -> dict:
+        """
+        Check the current encounter's modifier against the played word.
+
+        Returns::
+
+            {
+                "violated": bool,
+                "penalty": int,
+                "message": str,
+                "detail": str,
+                "type": str | None,   # "blocking" or "penalty" or None
+            }
+        """
+        enc = self.current_encounter
+        if enc is None:
+            return {"violated": False, "penalty": 0, "message": "", "detail": "", "type": None}
+
+        modifier_key = enc.get("modifier")
+        if modifier_key is None:
+            return {"violated": False, "penalty": 0, "message": "", "detail": "", "type": None}
+
+        # Determine if this is a boss modifier or regular modifier
+        if modifier_key in BOSS_MODIFIERS:
+            mod = BOSS_MODIFIERS[modifier_key]
+        elif modifier_key in MODIFIERS:
+            mod = MODIFIERS[modifier_key]
+        else:
+            return {"violated": False, "penalty": 0, "message": "", "detail": "", "type": None}
+
+        penalty = mod["penalty"]
+        mod_type = mod.get("type", "penalty")
+        name = mod["name"]
+        w = word.lower()
+        rw = resolved_word.lower() if resolved_word else w
+
+        violated = False
+        detail = ""
+
+        if modifier_key == "no_vowel_start":
+            vowels = set("aeiou")
+            if rw and rw[0] in vowels:
+                violated = True
+                detail = "Your word can't start with a vowel"
+
+        elif modifier_key == "no_double_letters":
+            seen = set()
+            for ch in rw:
+                if ch in seen:
+                    violated = True
+                    detail = "Your word can't repeat a letter"
+                    break
+                seen.add(ch)
+
+        elif modifier_key == "must_use_highest":
+            # Find the highest-point letter in the player's hand
+            highest_letter = None
+            highest_value = -1
+            for card in self._hand:
+                val = LETTER_VALUES.get(card, 0)
+                if val > highest_value:
+                    highest_value = val
+                    highest_letter = card
+            # Check if that letter (or a wildcard standing in for it) is in the word
+            if highest_letter and highest_letter not in w:
+                violated = True
+                detail = f"Your word must include {highest_letter.upper()} (highest-point letter)"
+
+        elif modifier_key == "min_length_4":
+            if len(rw) < 4:
+                violated = True
+                detail = "Your word must be at least 4 letters long"
+
+        elif modifier_key == "no_wildcards":
+            if '*' in w:
+                violated = True
+                detail = "Your word can't use wildcards"
+
+        elif modifier_key == "must_use_two_vowels":
+            vowels = set("aeiou")
+            vowel_count = sum(1 for ch in rw if ch in vowels)
+            if vowel_count < 2:
+                violated = True
+                detail = "Your word must have at least 2 vowels"
+
+        elif modifier_key == "boss_vowel_double":
+            # Compound: no vowel start AND no double letters
+            vowels = set("aeiou")
+            vowel_start = rw and rw[0] in vowels
+            seen = set()
+            has_double = False
+            for ch in rw:
+                if ch in seen:
+                    has_double = True
+                    break
+                seen.add(ch)
+            if vowel_start and has_double:
+                violated = True
+                detail = "Your word can't start with a vowel AND can't repeat a letter"
+            elif vowel_start:
+                violated = True
+                detail = "Your word can't start with a vowel"
+            elif has_double:
+                violated = True
+                detail = "Your word can't repeat a letter"
+
+        elif modifier_key == "boss_highest_length":
+            # Compound: must use highest letter AND word must be 5+ letters
+            highest_letter = None
+            highest_value = -1
+            for card in self._hand:
+                val = LETTER_VALUES.get(card, 0)
+                if val > highest_value:
+                    highest_value = val
+                    highest_letter = card
+            too_short = len(rw) < 5
+            missing_highest = highest_letter and highest_letter not in w
+            if too_short and missing_highest:
+                violated = True
+                detail = f"Your word must be 5+ letters AND include {highest_letter.upper()}"
+            elif too_short:
+                violated = True
+                detail = "Your word must be at least 5 letters long"
+            elif missing_highest:
+                violated = True
+                detail = f"Your word must include {highest_letter.upper()} (highest-point letter)"
+
+        if violated:
+            if mod_type == "blocking":
+                message = f"Rule: {name} — {detail}"
+            else:
+                message = f"Modifier: {name} — {detail} (-{penalty} pts)"
+            return {
+                "violated": True,
+                "penalty": penalty,
+                "message": message,
+                "detail": detail,
+                "type": mod_type,
+            }
+        return {"violated": False, "penalty": 0, "message": "", "detail": "", "type": None}
 
     # ── Internal helpers ─────────────────────────────────────────────────
 
