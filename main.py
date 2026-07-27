@@ -447,17 +447,17 @@ class App:
         # HP
         hp_text = f"HP: {eng.hp}/{eng.max_hp}"
         hp_color = DANGER_COLOR if eng.hp <= 2 else SUCCESS_COLOR
-        _draw_text_left(self.screen, hp_text, self.body_font, hp_color, 30, 40)
+        _draw_text_left(self.screen, hp_text, self.body_font, hp_color, 30, 20)
 
         # encounter counter
         total = eng.encounters_cleared + 1
         max_total = ENCOUNTERS_BEFORE_BOSS + 1
         enc_text = f"Encounter {total}/{max_total}"
-        _draw_text_center(self.screen, enc_text, self.small_font, TEXT_COLOR, 40)
+        _draw_text_center(self.screen, enc_text, self.small_font, TEXT_COLOR, 20)
 
         # round counter
         round_text = f"Round {eng.current_round}/{eng.rounds_per_encounter}"
-        _draw_text_center(self.screen, round_text, self.body_font, ACCENT_COLOR, 70)
+        _draw_text_center(self.screen, round_text, self.body_font, ACCENT_COLOR, 50)
 
         # boss warning
         if eng.is_boss_encounter:
@@ -625,6 +625,16 @@ class App:
         hp_color = DANGER_COLOR if eng.hp <= 2 else SUCCESS_COLOR
         _draw_text_left(self.screen, hp_text, self.body_font, hp_color, 30, 20)
 
+        # encounter counter
+        total = eng.encounters_cleared + 1
+        max_total = ENCOUNTERS_BEFORE_BOSS + 1
+        enc_text = f"Encounter {total}/{max_total}"
+        _draw_text_center(self.screen, enc_text, self.small_font, TEXT_COLOR, 20)
+
+        # round counter
+        round_text = f"Round {eng.current_round}/{eng.rounds_per_encounter}"
+        _draw_text_center(self.screen, round_text, self.body_font, ACCENT_COLOR, 50)
+
         # deck / discard counts (top-right)
         deck_text = f"Deck: {eng.deck_size}  |  Discard: {eng.discard_size}"
         deck_surf = self.small_font.render(deck_text, True, (160, 160, 200))
@@ -643,14 +653,10 @@ class App:
         req_text = f"Requirement: {eng.current_requirement} pts"
         _draw_text_center(self.screen, req_text, self.body_font, ACCENT_COLOR, info_y)
 
-        # round counter
-        round_text = f"Round {eng.current_round}/{eng.rounds_per_encounter}"
-        _draw_text_center(self.screen, round_text, self.small_font, TEXT_COLOR, info_y + 30)
-
         # prompt
         rd = eng.current_round_data
         prompt = rd["prompt"] if rd else "Choose your word..."
-        _draw_text_center(self.screen, prompt, self.body_font, TEXT_COLOR, info_y + 60)
+        _draw_text_center(self.screen, prompt, self.body_font, TEXT_COLOR, info_y + 30)
 
         # modifier reminder
         enc = eng.current_encounter
