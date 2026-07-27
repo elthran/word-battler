@@ -65,6 +65,9 @@ class GameEngine:
         self._potions: list[str] = []
         self._init_potions()
 
+        # ── Played words (for OpenAI uniqueness scoring) ───────────────
+        self._played_words: list[str] = []
+
         random.shuffle(self._deck)
         self._draw_cards(self.hand_size)
 
@@ -191,6 +194,10 @@ class GameEngine:
         return list(self._accessories)
 
     @property
+    def played_words(self) -> list[str]:
+        return list(self._played_words)
+
+    @property
     def is_encounter_finished(self) -> bool:
         """True when all rounds for the current encounter are done."""
         return self.current_round > self.rounds_per_encounter
@@ -221,6 +228,32 @@ class GameEngine:
             {"violated": bool, "penalty": int, "message": str, "type": str}
         """
         return self._check_modifier(word, word)
+
+    def preview_openai_score(self, word: str) -> dict | None:
+        """
+        Call the OpenAI API to score *word* without consuming cards or
+        advancing the game state.  Resolves wildcards first.
+
+        Returns the same dict as ``score_word()``, or ``None`` if the
+        word cannot be resolved to a valid dictionary word.
+        """
+        w = word.lower()
+        resolved = self._resolve_wildcards(w)
+        if resolved is None:
+            return None
+
+        rd = self.current_round_data
+        if rd is None:
+            return None
+
+        sentence = rd.get("prompt", "")
+        try:
+            return score_word(
+                sentence, resolved, game_id=self.game_id,
+                played_words=self._played_words,
+            )
+        except Exception:
+            return None
 
     # ── Encounter flow ───────────────────────────────────────────────────
 
@@ -263,12 +296,15 @@ class GameEngine:
 
     # ── Word play ───────────────────────────────────────────────────────
 
-    def play_word(self, word: str) -> dict:
+    def play_word(self, word: str, cached_openai_result: dict | None = None) -> dict:
         """
         Validate *word* against the dictionary and the current hand,
         calculate the score, apply damage, and refresh the hand.
 
         *word* may contain ``'*'`` characters representing wildcards.
+
+        If *cached_openai_result* is provided (from a preview call), the
+        OpenAI API is not called again — the cached values are used instead.
 
         Returns a dict::
 
@@ -329,22 +365,32 @@ class GameEngine:
         modifier_penalty = modifier_result["penalty"] if modifier_result["violated"] else 0
         effective_score = max(0, score - modifier_penalty)
 
-        # 3d. OpenAI scoring — additive bonus from exoticness, multiplier from suitability
-        openai_bonus = {"additive_bonus": 0, "multiplier": 1.0, "exoticness": 0, "suitability": 0}
-        try:
-            rd = self.current_round_data
-            if rd:
-                sentence = rd.get("prompt", "")
-                openai_result = score_word(sentence, resolved, game_id=self.game_id)
-                openai_bonus = openai_result
-        except Exception:
-            pass  # If OpenAI call fails, just use no bonus
+        # 3d. OpenAI scoring — additive bonus from exoticness, multipliers from suitability & uniqueness
+        openai_bonus = {
+            "exoticness": 0, "suitability": 0, "uniqueness": 0,
+            "additive_bonus": 0, "suitability_multiplier": 1.0, "uniqueness_multiplier": 1.0,
+        }
+        if cached_openai_result is not None:
+            openai_bonus = cached_openai_result
+        else:
+            try:
+                rd = self.current_round_data
+                if rd:
+                    sentence = rd.get("prompt", "")
+                    openai_result = score_word(
+                        sentence, resolved, game_id=self.game_id,
+                        played_words=self._played_words,
+                    )
+                    openai_bonus = openai_result
+            except Exception:
+                pass  # If OpenAI call fails, just use no bonus
 
         additive_bonus = openai_bonus["additive_bonus"]
-        multiplier = openai_bonus["multiplier"]
+        suitability_mult = openai_bonus["suitability_multiplier"]
+        uniqueness_mult = openai_bonus["uniqueness_multiplier"]
 
-        # Apply additive bonus first, then multiply
-        effective_score = max(0, int((effective_score + additive_bonus) * multiplier))
+        # Apply additive bonus first, then both multipliers
+        effective_score = max(0, int((effective_score + additive_bonus) * suitability_mult * uniqueness_mult))
 
         # 4.  Damage (based on effective score after modifier penalty)
         damage = max(0, self.current_requirement - effective_score)
@@ -357,7 +403,10 @@ class GameEngine:
         # 6.  Track round success
         round_success = effective_score >= self.current_requirement
 
-        # 7.  Generate narrative
+        # 7.  Track played word for uniqueness scoring
+        self._played_words.append(resolved)
+
+        # 8.  Generate narrative
         narrative = self._narrative_result(round_success, damage)
 
         return {
@@ -418,6 +467,31 @@ class GameEngine:
                 total += 2
 
         return total
+
+    def check_accessory_active(self, acc_key: str, word: str) -> bool:
+        """Return True if the accessory *acc_key* would activate for *word*."""
+        w = word.lower()
+        if acc_key == "wildcard_plus":
+            return '*' in w
+        if acc_key == "double_letter":
+            letter_counts: dict[str, int] = {}
+            for ch in w:
+                if ch != '*':
+                    letter_counts[ch] = letter_counts.get(ch, 0) + 1
+            return any(c >= 2 for c in letter_counts.values())
+        if acc_key == "vowel_bonus":
+            vowels = set("aeiou")
+            return sum(1 for ch in w if ch in vowels) >= 2
+        if acc_key == "long_word":
+            return len(w) >= 5
+        if acc_key == "consonant_bonus":
+            vowels = set("aeiou")
+            return sum(1 for ch in w if ch not in vowels and ch != '*') >= 3
+        if acc_key == "extra_draw":
+            return True  # always active
+        if acc_key == "vitality_core":
+            return True  # always active
+        return False
 
     def _narrative_result(self, success: bool, damage: int) -> str:
         """Return a narrative description of the round outcome."""

@@ -107,6 +107,7 @@ class CardButton:
         self.index = index
         self.selected = False
         self.rect = pygame.Rect(0, 0, CARD_W, CARD_H)
+        self.highlight: str | None = None  # "gold" or "red" or None
 
     def handle_event(self, event: pygame.event.Event) -> bool:
         """Return ``True`` if clicked."""
@@ -121,7 +122,14 @@ class CardButton:
         y_offset = -8 if self.selected else 0
         r = self.rect.move(0, y_offset)
         pygame.draw.rect(screen, bg, r, border_radius=6)
-        border_c = ACCENT_COLOR if self.letter == '*' else CARD_BORDER
+        if self.highlight == "gold":
+            border_c = ACCENT_COLOR
+        elif self.highlight == "red":
+            border_c = DANGER_COLOR
+        elif self.letter == '*':
+            border_c = WILDCARD_COLOR
+        else:
+            border_c = CARD_BORDER
         pygame.draw.rect(screen, border_c, r, width=2, border_radius=6)
 
         # letter
@@ -215,6 +223,7 @@ class AccessoryIcon:
         self.index = index
         self.rect = pygame.Rect(0, 0, ACC_W, ACC_H)
         self._hovered = False
+        self.active = False  # set externally when the accessory's condition is met
 
     def handle_event(self, event: pygame.event.Event):
         if event.type == pygame.MOUSEMOTION:
@@ -225,12 +234,27 @@ class AccessoryIcon:
         name = acc.get("name", "???")
         desc = acc.get("description", "")
 
-        color = BUTTON_HOVER if self._hovered else PANEL_COLOR
+        if self.active:
+            color = (60, 50, 20)  # warm dark gold background
+            border_color = ACCENT_COLOR
+            border_width = 3
+            text_color = ACCENT_COLOR
+        elif self._hovered:
+            color = BUTTON_HOVER
+            border_color = SUCCESS_COLOR
+            border_width = 2
+            text_color = TEXT_COLOR
+        else:
+            color = PANEL_COLOR
+            border_color = SUCCESS_COLOR
+            border_width = 2
+            text_color = TEXT_COLOR
+
         pygame.draw.rect(screen, color, self.rect, border_radius=6)
-        pygame.draw.rect(screen, SUCCESS_COLOR, self.rect, width=2, border_radius=6)
+        pygame.draw.rect(screen, border_color, self.rect, width=border_width, border_radius=6)
 
         # Full name centered in the icon
-        name_surf = small_font.render(name, True, TEXT_COLOR)
+        name_surf = small_font.render(name, True, text_color)
         nx = self.rect.centerx - name_surf.get_width() // 2
         ny = self.rect.centery - name_surf.get_height() // 2
         screen.blit(name_surf, (nx, ny))
@@ -296,6 +320,11 @@ class App:
         self._result_data: dict | None = None
         self._result_timer: int = 0
         self._error_message: str = ""
+
+        # OpenAI preview state
+        self._preview_data: dict | None = None   # cached API result from preview
+        self._preview_word: str = ""             # the word that was previewed
+        self._loading: bool = False              # True while waiting for API response
 
         # Potions & accessories
         self._potion_buttons: list[PotionButton] = []
@@ -533,11 +562,11 @@ class App:
             self._accessory_icons.append(AccessoryIcon(key, i))
 
     def _layout_cards(self):
-        """Position card buttons in a row at ~2/3 vertical."""
+        """Position card buttons in a row near the bottom."""
         n = len(self._card_buttons)
         total_w = n * CARD_W + (n - 1) * CARD_GAP
         start_x = (WINDOW_W - total_w) // 2
-        y = WINDOW_H * 2 // 3 - CARD_H // 2
+        y = WINDOW_H * 3 // 4 - CARD_H // 2
         for i, cb in enumerate(self._card_buttons):
             cb.rect.x = start_x + i * (CARD_W + CARD_GAP)
             cb.rect.y = y
@@ -570,6 +599,8 @@ class App:
         # card clicks
         for cb in self._card_buttons:
             if cb.handle_event(event):
+                if self._loading:
+                    return
                 if cb.selected:
                     # deselect
                     cb.selected = False
@@ -578,11 +609,15 @@ class App:
                     cb.selected = True
                     self._current_word.append(cb.letter)
                 self._error_message = ""
+                self._preview_data = None  # word changed, invalidate preview
+                self._preview_word = ""
                 return
 
         # potion clicks
         for pb in self._potion_buttons:
             if pb.handle_event(event):
+                if self._loading:
+                    return
                 result = self.engine.use_potion(pb.index)
                 if result:
                     # Rebuild UI after potion use
@@ -590,6 +625,8 @@ class App:
                     self._build_potion_buttons()
                     self._current_word = []
                     self._error_message = f"Used {result['name']}!"
+                    self._preview_data = None
+                    self._preview_word = ""
                 return
 
         # accessory hover
@@ -597,11 +634,39 @@ class App:
             ai.handle_event(event)
 
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if self._loading:
+                return
+
+            # preview score
+            if (self._preview_btn and not self._preview_btn.disabled
+                    and self._preview_btn.rect.collidepoint(event.pos)):
+                word = "".join(self._current_word)
+                self._loading = True
+                self._draw()
+                pygame.display.flip()
+                result = self.engine.preview_openai_score(word)
+                self._loading = False
+                if result is not None:
+                    self._preview_data = result
+                    self._preview_word = word
+                    self._error_message = ""
+                else:
+                    self._error_message = "Cannot preview — not a valid word."
+                return
+
             # submit
             if self._submit_btn and not self._submit_btn.disabled and self._submit_btn.rect.collidepoint(event.pos):
                 word = "".join(self._current_word)
-                self._result_data = self.engine.play_word(word)
+                # Use cached preview data if it matches the current word
+                cached = self._preview_data if self._preview_word == word else None
+                self._loading = True
+                self._draw()
+                pygame.display.flip()
+                self._result_data = self.engine.play_word(word, cached_openai_result=cached)
+                self._loading = False
                 self._result_timer = 2500  # ms
+                self._preview_data = None
+                self._preview_word = ""
                 self.state = GameState.RESULT
                 return
 
@@ -611,6 +676,8 @@ class App:
                     cb.selected = False
                 self._current_word = []
                 self._error_message = ""
+                self._preview_data = None
+                self._preview_word = ""
 
             # shuffle
             if self._shuffle_btn and self._shuffle_btn.rect.collidepoint(event.pos):
@@ -619,6 +686,8 @@ class App:
                 # Deselect any selected cards since the hand changed
                 self._current_word = []
                 self._error_message = ""
+                self._preview_data = None
+                self._preview_word = ""
 
     def _draw_play_word(self):
         eng = self.engine
@@ -644,8 +713,8 @@ class App:
         deck_surf = self.small_font.render(deck_text, True, (160, 160, 200))
         self.screen.blit(deck_surf, (WINDOW_W - deck_surf.get_width() - 30, 24))
 
-        # ── info text (upper-middle, ~1/3 vertical) ──────────────────
-        info_y = WINDOW_H // 3
+        # ── info text (upper-middle) ──────────────────────────────────
+        info_y = WINDOW_H // 4
 
         # encounter name
         enc_name = eng.encounter_name
@@ -679,15 +748,17 @@ class App:
         _draw_text_center(self.screen, word_display, self.heading_font,
                           word_color, info_y + 130)
 
-        # live score preview
+        # ── Score preview & modifier display ─────────────────────────
         modifier_violated = False
         modifier_penalty = 0
         modifier_type = None
         modifier_detail = ""
+        preview_score = 0
+        req = eng.current_requirement
+
         if self._current_word:
             word_str = "".join(self._current_word)
             preview_score = eng.calculate_score(word_str)
-            req = eng.current_requirement
             # Check modifier for preview
             mod_result = eng.check_modifier_preview(word_str)
             modifier_violated = mod_result["violated"]
@@ -695,54 +766,132 @@ class App:
             modifier_type = mod_result.get("type")
             modifier_detail = mod_result.get("detail", "")
 
+        # ── OpenAI modifier display ──────────────────────────────────
+        mod_y = info_y + 170
+        mod_line_h = 22
+
+        if self._preview_data is not None and self._preview_word == "".join(self._current_word):
+            # Show actual values from preview
+            pd = self._preview_data
+            ex = pd["exoticness"]
+            ab = pd["additive_bonus"]
+            ab_sign = "+" if ab >= 0 else ""
+            ex_text = f"Exotic: {ex}/10  →  {ab_sign}{ab}  (-2 to +3)"
+            _draw_text_center(self.screen, ex_text, self.small_font, ACCENT_COLOR, mod_y)
+
+            su = pd["suitability"]
+            sm = pd["suitability_multiplier"]
+            su_text = f"Suitable: {su}/10  →  ×{sm:.2f}  (×0.75 to ×1.25)"
+            _draw_text_center(self.screen, su_text, self.small_font, ACCENT_COLOR, mod_y + mod_line_h)
+
+            un = pd["uniqueness"]
+            um = pd["uniqueness_multiplier"]
+            un_text = f"Unique: {un}/10  →  ×{um:.2f}  (×0.75 to ×1.25)"
+            _draw_text_center(self.screen, un_text, self.small_font, ACCENT_COLOR, mod_y + mod_line_h * 2)
+
+            # Show actual projected score
             if modifier_violated and modifier_type == "blocking":
-                # Blocking rules: show score without penalty, don't show (-X mod)
                 effective_preview = preview_score
-                score_text = f"Score: {effective_preview} pts / {req} pts"
-                score_color = SUCCESS_COLOR if effective_preview >= req else DANGER_COLOR
             else:
-                # Penalty modifiers: show effective score with penalty
                 effective_preview = max(0, preview_score - modifier_penalty)
-                score_text = f"Score: {effective_preview} pts / {req} pts"
-                if modifier_violated:
-                    score_text += f"  (-{modifier_penalty} mod)"
-                score_color = SUCCESS_COLOR if effective_preview >= req else DANGER_COLOR
+            projected = max(0, int((effective_preview + ab) * sm * um))
+            score_text = f"Score: {projected} pts / {req} pts"
+            score_color = SUCCESS_COLOR if projected >= req else DANGER_COLOR
             _draw_text_center(self.screen, score_text, self.small_font,
-                              score_color, info_y + 175)
+                              score_color, mod_y + mod_line_h * 3)
+        elif self._current_word:
+            # Show ? with min/max ranges
+            ex_text = "Exotic: ?  (-2 to +3)"
+            _draw_text_center(self.screen, ex_text, self.small_font, (140, 140, 180), mod_y)
+
+            su_text = "Suitable: ?  (×0.75 to ×1.25)"
+            _draw_text_center(self.screen, su_text, self.small_font, (140, 140, 180), mod_y + mod_line_h)
+
+            un_text = "Unique: ?  (×0.75 to ×1.25)"
+            _draw_text_center(self.screen, un_text, self.small_font, (140, 140, 180), mod_y + mod_line_h * 2)
+
+            # Show raw score + min/max range in brackets
+            if modifier_violated and modifier_type == "blocking":
+                effective_preview = preview_score
+            else:
+                effective_preview = max(0, preview_score - modifier_penalty)
+            min_score = max(0, int((effective_preview - 2) * 0.75 * 0.75))
+            max_score = max(0, int((effective_preview + 3) * 1.25 * 1.25))
+            score_text = f"Score: {effective_preview} pts ({min_score}–{max_score}) / {req} pts"
+            score_color = SUCCESS_COLOR if max_score >= req else DANGER_COLOR
+            _draw_text_center(self.screen, score_text, self.small_font,
+                              score_color, mod_y + mod_line_h * 3)
 
         # error message
         if self._error_message:
             _draw_text_center(self.screen, self._error_message, self.body_font,
-                              DANGER_COLOR, info_y + 180)
+                              DANGER_COLOR, mod_y + mod_line_h * 3 + 30)
+
+        # loading indicator
+        if self._loading:
+            _draw_text_center(self.screen, "Loading...", self.body_font,
+                              ACCENT_COLOR, mod_y + mod_line_h * 3 + 30)
 
         # ── cards (lower-middle, ~2/3 vertical) ──────────────────────
         self._layout_cards()
+
+        # Set card highlights based on encounter modifier
+        enc = eng.current_encounter
+        modifier_key = enc.get("modifier", "") if enc else ""
+        for cb in self._card_buttons:
+            cb.highlight = None
+        if modifier_key in ("must_use_highest", "boss_highest_length"):
+            # Find the highest-point letter in hand
+            highest_val = -1
+            for cb in self._card_buttons:
+                val = LETTER_VALUES.get(cb.letter, 0)
+                if val > highest_val:
+                    highest_val = val
+            for cb in self._card_buttons:
+                if LETTER_VALUES.get(cb.letter, 0) == highest_val:
+                    cb.highlight = "gold"
+        if modifier_key == "no_wildcards":
+            for cb in self._card_buttons:
+                if cb.letter == '*':
+                    cb.highlight = "red"
+
         for cb in self._card_buttons:
             cb.draw(self.screen, self.card_font, self.small_font)
 
-        # submit / clear / shuffle buttons (just below cards)
-        card_y = WINDOW_H * 2 // 3 - CARD_H // 2
+        # submit / clear / shuffle / preview buttons (just below cards)
+        card_y = WINDOW_H * 3 // 4 - CARD_H // 2
         btn_y = card_y + CARD_H + 10
-        btn_w = 140
-        btn_gap = 15
-        total_w = 3 * btn_w + 2 * btn_gap
+        btn_w = 130
+        btn_gap = 10
+        total_w = 4 * btn_w + 3 * btn_gap
         start_x = (WINDOW_W - total_w) // 2
-        submit_disabled = len(self._current_word) == 0 or (modifier_violated and modifier_type == "blocking")
+        all_disabled = self._loading
+        submit_disabled = all_disabled or len(self._current_word) == 0 or (modifier_violated and modifier_type == "blocking")
+        preview_disabled = all_disabled or len(self._current_word) == 0
+
         self._clear_btn = Button(
             pygame.Rect(start_x, btn_y, btn_w, 48),
             "Clear", self.small_font,
+            disabled=all_disabled,
         )
         self._shuffle_btn = Button(
             pygame.Rect(start_x + btn_w + btn_gap, btn_y, btn_w, 48),
-            "Shuffle Letters", self.small_font,
+            "Shuffle", self.small_font,
+            disabled=all_disabled,
+        )
+        self._preview_btn = Button(
+            pygame.Rect(start_x + 2 * (btn_w + btn_gap), btn_y, btn_w, 48),
+            "Preview Score", self.small_font,
+            disabled=preview_disabled,
         )
         self._submit_btn = Button(
-            pygame.Rect(start_x + 2 * (btn_w + btn_gap), btn_y, btn_w, 48),
+            pygame.Rect(start_x + 3 * (btn_w + btn_gap), btn_y, btn_w, 48),
             "Submit Word", self.small_font,
             disabled=submit_disabled,
         )
         self._clear_btn.draw(self.screen)
         self._shuffle_btn.draw(self.screen)
+        self._preview_btn.draw(self.screen)
         self._submit_btn.draw(self.screen)
 
         # reason text below submit button when blocked
@@ -758,7 +907,9 @@ class App:
 
         # accessories (bottom-left)
         self._layout_accessories()
+        word_str = "".join(self._current_word)
         for ai in self._accessory_icons:
+            ai.active = bool(word_str) and eng.check_accessory_active(ai.key, word_str)
             ai.draw(self.screen, self.small_font)
 
     # ── RESULT overlay ───────────────────────────────────────────────────
@@ -796,15 +947,15 @@ class App:
 
         # ── Draw a solid panel behind the results ─────────────────────
         panel_w = 600
-        panel_h = 420
+        panel_h = 500
         panel_x = (WINDOW_W - panel_w) // 2
-        panel_y = 140
+        panel_y = 100
         panel_rect = pygame.Rect(panel_x, panel_y, panel_w, panel_h)
         pygame.draw.rect(self.screen, PANEL_COLOR, panel_rect, border_radius=12)
         pygame.draw.rect(self.screen, ACCENT_COLOR, panel_rect, width=2, border_radius=12)
 
         y = panel_y + 20
-        line_h = 30
+        line_h = 28
 
         # ── 1. Your word ──────────────────────────────────────────────
         if resolved:
@@ -820,16 +971,25 @@ class App:
         # Exoticness
         exoticness = ob.get("exoticness", 0)
         additive_bonus = ob.get("additive_bonus", 0)
-        exotic_text = f"Exotic: {exoticness}/10  →  +{additive_bonus} score (max +3)"
+        ab_sign = "+" if additive_bonus >= 0 else ""
+        exotic_text = f"Exotic: {exoticness}/10  →  {ab_sign}{additive_bonus} score  (-2 to +3)"
         _draw_text_center(self.screen, exotic_text, self.small_font,
                           ACCENT_COLOR, y)
         y += line_h
 
         # Suitability
         suitability = ob.get("suitability", 0)
-        multiplier = ob.get("multiplier", 1.0)
-        suit_text = f"Suitability: {suitability}/10  →  ×{multiplier:.1f} multiplier (max ×5.0)"
+        suitability_mult = ob.get("suitability_multiplier", 1.0)
+        suit_text = f"Suitable: {suitability}/10  →  ×{suitability_mult:.2f}  (×0.75 to ×1.25)"
         _draw_text_center(self.screen, suit_text, self.small_font,
+                          ACCENT_COLOR, y)
+        y += line_h
+
+        # Uniqueness
+        uniqueness = ob.get("uniqueness", 0)
+        uniqueness_mult = ob.get("uniqueness_multiplier", 1.0)
+        uniq_text = f"Unique: {uniqueness}/10  →  ×{uniqueness_mult:.2f}  (×0.75 to ×1.25)"
+        _draw_text_center(self.screen, uniq_text, self.small_font,
                           ACCENT_COLOR, y)
         y += line_h
 
@@ -851,10 +1011,13 @@ class App:
         if modifier_penalty > 0:
             calc_lines.append(f"  − Modifier penalty: -{modifier_penalty}")
             calc_lines.append(f"  = After penalty: {max(0, score - modifier_penalty)}")
-        if additive_bonus > 0:
-            calc_lines.append(f"  + Exotic bonus: +{additive_bonus}")
-        if multiplier != 1.0:
-            calc_lines.append(f"  × Suitability multiplier: ×{multiplier:.1f}")
+        if additive_bonus != 0:
+            ab_sign = "+" if additive_bonus > 0 else ""
+            calc_lines.append(f"  {ab_sign} Exotic bonus: {ab_sign}{additive_bonus}")
+        if suitability_mult != 1.0:
+            calc_lines.append(f"  × Suitable multiplier: ×{suitability_mult:.2f}")
+        if uniqueness_mult != 1.0:
+            calc_lines.append(f"  × Unique multiplier: ×{uniqueness_mult:.2f}")
 
         for line in calc_lines:
             _draw_text_center(self.screen, line, self.small_font,
@@ -894,6 +1057,8 @@ class App:
                 self._build_accessory_icons()
                 self._current_word = []
                 self._error_message = ""
+                self._preview_data = None
+                self._preview_word = ""
                 self.state = GameState.PLAY_WORD
             return
 

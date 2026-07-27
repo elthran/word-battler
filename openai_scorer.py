@@ -1,10 +1,11 @@
 """OpenAI-powered word scoring for Word Battler.
 
-Calls the OpenAI API to rate a word on two dimensions:
+Calls the OpenAI API to rate a word on three dimensions:
 1. Exoticness / interest — how unusual or interesting the word is
 2. Suitability — how well the word fits into the given sentence
+3. Uniqueness — how different the word is from previously played words
 
-Returns an additive bonus (+0 to +3) and a multiplicative bonus (×1 to ×5).
+Returns an additive bonus (-2 to +3) and two multipliers (0.75x-1.25x, 0.75x-1.25x).
 
 All requests and responses are logged to ``logs/openai/<game_id>.jsonl``.
 """
@@ -53,22 +54,34 @@ def _log_entry(game_id: str, entry: dict):
         f.write(json.dumps(entry) + "\n")
 
 
-def score_word(sentence: str, word: str, game_id: str = "unknown") -> dict:
+def score_word(sentence: str, word: str, game_id: str = "unknown",
+               played_words: list[str] | None = None) -> dict:
     """Call the OpenAI API to rate a word for a sentence.
 
     Args:
         sentence: The sentence prompt with a blank like "[ ______ ]".
         word: The word the player chose to fill the blank.
         game_id: A unique identifier for this game session (used for logging).
+        played_words: List of words already played this game (for uniqueness rating).
 
     Returns:
         A dict with:
             exoticness: int 0-10
             suitability: int 0-10
-            additive_bonus: int 0-3 (mapped from exoticness)
-            multiplier: float 1.0-5.0 (mapped from suitability)
+            uniqueness: int 0-10
+            additive_bonus: int -2 to +3 (mapped from exoticness)
+            suitability_multiplier: float 0.75-1.25 (mapped from suitability)
+            uniqueness_multiplier: float 0.75-1.25 (mapped from uniqueness)
     """
-    user_prompt = f"Sentence: {sentence}\nWord: {word}"
+    if played_words is None:
+        played_words = []
+
+    played_words_str = ", ".join(played_words) if played_words else "(none yet)"
+    user_prompt = (
+        f"Sentence: {sentence}\n"
+        f"Word: {word}\n"
+        f"Previously played words: {played_words_str}"
+    )
 
     timestamp = datetime.datetime.now().isoformat()
 
@@ -78,6 +91,7 @@ def score_word(sentence: str, word: str, game_id: str = "unknown") -> dict:
         "timestamp": timestamp,
         "sentence": sentence,
         "word": word,
+        "played_words": played_words,
         "model": _OPENAI_MODEL,
         "system_prompt": SYSTEM_PROMPT,
         "user_prompt": user_prompt,
@@ -104,18 +118,24 @@ def score_word(sentence: str, word: str, game_id: str = "unknown") -> dict:
     data = json.loads(raw_content)
     exoticness = max(0, min(10, int(data["exoticness"])))
     suitability = max(0, min(10, int(data["suitability"])))
+    uniqueness = max(0, min(10, int(data.get("uniqueness", 10))))
 
-    # Map exoticness 0-10 → additive bonus 0-3
-    additive_bonus = round(exoticness / 10 * 3)
+    # Map exoticness 0-10 → additive bonus -2 to +3
+    additive_bonus = round(exoticness / 10 * 5 - 2)
 
-    # Map suitability 0-10 → multiplier 1.0-5.0
-    multiplier = 1.0 + (suitability / 10) * 4.0
+    # Map suitability 0-10 → multiplier 0.75-1.25
+    suitability_multiplier = 0.75 + suitability / 10 * 0.5
+
+    # Map uniqueness 0-10 → multiplier 0.75-1.25
+    uniqueness_multiplier = 0.75 + uniqueness / 10 * 0.5
 
     result = {
         "exoticness": exoticness,
         "suitability": suitability,
+        "uniqueness": uniqueness,
         "additive_bonus": additive_bonus,
-        "multiplier": multiplier,
+        "suitability_multiplier": suitability_multiplier,
+        "uniqueness_multiplier": uniqueness_multiplier,
     }
 
     # Log the response
