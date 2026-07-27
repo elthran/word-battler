@@ -179,3 +179,64 @@ BOSS_ENCOUNTER: dict = {
         },
     ],
 }
+
+# ── Potions ──────────────────────────────────────────────────────────────────
+# One-time-use items.  Key → {name, description, effect}
+
+POTIONS: dict[str, dict] = {
+    "shuffle": {
+        "name": "Shuffle Potion",
+        "description": "Shuffle your hand into your deck and redraw.",
+        "effect": "shuffle",
+    },
+    "healing": {
+        "name": "Healing Potion",
+        "description": "Restore 5 HP.",
+        "effect": "healing",
+    },
+    "wildcard": {
+        "name": "Wildcard Potion",
+        "description": "Add a wildcard (*) to your hand. It disappears after use.",
+        "effect": "wildcard",
+    },
+}
+
+POTION_KEYS: list[str] = list(POTIONS.keys())
+
+# ── Accessories ──────────────────────────────────────────────────────────────
+# Permanent items.  Key → {name, description, effect}
+
+ACCESSORIES: dict[str, dict] = {
+    "extra_draw": {
+        "name": "Lucky Charm",
+        "description": "Draw +1 card at the start of each round.",
+        "effect": "extra_draw",
+    },
+    "wildcard_plus": {
+        "name": "Star Pendant",
+        "description": "Wildcards (*) are worth +1 point.",
+        "effect": "wildcard_plus",
+    },
+    "double_letter": {
+        "name": "Twin Ring",
+        "description": "Using two of the same letter in a word gives +2 points.",
+        "effect": "double_letter",
+    },
+    "vowel_bonus": {
+        "name": "Vowel Charm",
+        "description": "Using two or more vowels in a word gives +1 point.",
+        "effect": "vowel_bonus",
+    },
+    "long_word": {
+        "name": "Sage's Tome",
+        "description": "Words of 5+ letters earn +3 bonus points.",
+        "effect": "long_word",
+    },
+    "consonant_bonus": {
+        "name": "Stone Amulet",
+        "description": "Using 3+ consonants in a word gives +2 points.",
+        "effect": "consonant_bonus",
+    },
+}
+
+ACCESSORY_KEYS: list[str] = list(ACCESSORIES.keys())

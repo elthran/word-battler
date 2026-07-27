@@ -4,10 +4,10 @@ import sys
 from enum import Enum, auto
 import pygame
 from engine import GameEngine
-from data import LETTER_VALUES, ARCHETYPES, MAX_HP
+from data import LETTER_VALUES, ARCHETYPES, MAX_HP, POTIONS, ACCESSORIES
 
 # ── Constants ───────────────────────────────────────────────────────────────
-WINDOW_W, WINDOW_H = 1024, 768
+WINDOW_W, WINDOW_H = 1500, 800
 FPS = 60
 
 # Colours (R, G, B)
@@ -138,6 +138,125 @@ class CardButton:
         screen.blit(pt_surf, (px, py))
 
 
+# ── Potion button ────────────────────────────────────────────────────────────
+
+POTION_W, POTION_H = 130, 56
+POTION_GAP = 8
+
+
+class PotionButton:
+    """A clickable potion in the 1×3 grid."""
+
+    def __init__(self, potion_key: str, index: int):
+        self.key = potion_key
+        self.index = index
+        self.rect = pygame.Rect(0, 0, POTION_W, POTION_H)
+        self._hovered = False
+
+    def handle_event(self, event: pygame.event.Event) -> bool:
+        """Return True if clicked."""
+        if event.type == pygame.MOUSEMOTION:
+            self._hovered = self.rect.collidepoint(event.pos)
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if self.rect.collidepoint(event.pos):
+                return True
+        return False
+
+    def draw(self, screen: pygame.Surface, small_font: pygame.font.Font):
+        potion = POTIONS.get(self.key, {})
+        name = potion.get("name", "???")
+        desc = potion.get("description", "")
+
+        color = BUTTON_HOVER if self._hovered else BUTTON_COLOR
+        pygame.draw.rect(screen, color, self.rect, border_radius=8)
+        pygame.draw.rect(screen, ACCENT_COLOR, self.rect, width=2, border_radius=8)
+
+        # Full name centered in the button
+        name_surf = small_font.render(name, True, TEXT_COLOR)
+        nx = self.rect.centerx - name_surf.get_width() // 2
+        ny = self.rect.centery - name_surf.get_height() // 2
+        screen.blit(name_surf, (nx, ny))
+
+        # Tooltip on hover
+        if self._hovered:
+            self._draw_tooltip(screen, small_font, name, desc)
+
+    def _draw_tooltip(self, screen, font, name, desc):
+        """Draw a tooltip above the potion."""
+        pad = 8
+        name_surf = font.render(name, True, TEXT_COLOR)
+        desc_surf = font.render(desc, True, (200, 200, 220))
+        tw = max(name_surf.get_width(), desc_surf.get_width()) + pad * 2
+        th = name_surf.get_height() + desc_surf.get_height() + pad * 3
+        tx = self.rect.centerx - tw // 2
+        ty = self.rect.top - th - 6
+
+        # Keep on screen
+        tx = max(4, min(tx, WINDOW_W - tw - 4))
+        ty = max(4, ty)
+
+        pygame.draw.rect(screen, PANEL_COLOR, (tx, ty, tw, th), border_radius=6)
+        pygame.draw.rect(screen, ACCENT_COLOR, (tx, ty, tw, th), width=1, border_radius=6)
+        screen.blit(name_surf, (tx + pad, ty + pad))
+        screen.blit(desc_surf, (tx + pad, ty + pad + name_surf.get_height() + 4))
+
+
+# ── Accessory icon ───────────────────────────────────────────────────────────
+
+ACC_W, ACC_H = 150, 40
+ACC_GAP = 6
+
+
+class AccessoryIcon:
+    """A non-clickable accessory display with hover tooltip."""
+
+    def __init__(self, acc_key: str, index: int):
+        self.key = acc_key
+        self.index = index
+        self.rect = pygame.Rect(0, 0, ACC_W, ACC_H)
+        self._hovered = False
+
+    def handle_event(self, event: pygame.event.Event):
+        if event.type == pygame.MOUSEMOTION:
+            self._hovered = self.rect.collidepoint(event.pos)
+
+    def draw(self, screen: pygame.Surface, small_font: pygame.font.Font):
+        acc = ACCESSORIES.get(self.key, {})
+        name = acc.get("name", "???")
+        desc = acc.get("description", "")
+
+        color = BUTTON_HOVER if self._hovered else PANEL_COLOR
+        pygame.draw.rect(screen, color, self.rect, border_radius=6)
+        pygame.draw.rect(screen, SUCCESS_COLOR, self.rect, width=2, border_radius=6)
+
+        # Full name centered in the icon
+        name_surf = small_font.render(name, True, TEXT_COLOR)
+        nx = self.rect.centerx - name_surf.get_width() // 2
+        ny = self.rect.centery - name_surf.get_height() // 2
+        screen.blit(name_surf, (nx, ny))
+
+        # Tooltip on hover
+        if self._hovered:
+            self._draw_tooltip(screen, small_font, name, desc)
+
+    def _draw_tooltip(self, screen, font, name, desc):
+        pad = 8
+        name_surf = font.render(name, True, TEXT_COLOR)
+        desc_surf = font.render(desc, True, (200, 200, 220))
+        tw = max(name_surf.get_width(), desc_surf.get_width()) + pad * 2
+        th = name_surf.get_height() + desc_surf.get_height() + pad * 3
+        tx = self.rect.centerx - tw // 2
+        ty = self.rect.top - th - 6
+
+        tx = max(4, min(tx, WINDOW_W - tw - 4))
+        ty = max(4, ty)
+
+        pygame.draw.rect(screen, PANEL_COLOR, (tx, ty, tw, th), border_radius=6)
+        pygame.draw.rect(screen, SUCCESS_COLOR, (tx, ty, tw, th), width=1, border_radius=6)
+        screen.blit(name_surf, (tx + pad, ty + pad))
+        screen.blit(desc_surf, (tx + pad, ty + pad + name_surf.get_height() + 4))
+
+
 # ── State machine ────────────────────────────────────────────────────────────
 
 class GameState(Enum):
@@ -177,6 +296,10 @@ class App:
         self._result_data: dict | None = None
         self._result_timer: int = 0
         self._error_message: str = ""
+
+        # Potions & accessories
+        self._potion_buttons: list[PotionButton] = []
+        self._accessory_icons: list[AccessoryIcon] = []
 
     # ── Main loop ────────────────────────────────────────────────────────
 
@@ -273,7 +396,7 @@ class App:
                 if btn.rect.collidepoint(event.pos):
                     self.engine = GameEngine(key)
                     self.engine.next_encounter()
-                    self.state = GameState.ENCOUNTER
+                    self._enter_encounter()
 
     def _draw_archetype(self):
         _draw_text_center(self.screen, "Choose Your Archetype",
@@ -294,12 +417,26 @@ class App:
 
     # ── ENCOUNTER (Phase A) ──────────────────────────────────────────────
 
+    def _enter_encounter(self):
+        """Build UI elements when entering the encounter screen."""
+        self._build_potion_buttons()
+        self._build_accessory_icons()
+        self.state = GameState.ENCOUNTER
+
     def _encounter_event(self, event: pygame.event.Event):
+        # hover tooltips for accessories and potions (not clickable on encounter screen)
+        for ai in self._accessory_icons:
+            ai.handle_event(event)
+        for pb in self._potion_buttons:
+            pb.handle_event(event)
+
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             for approach, btn in self._approach_buttons:
                 if btn.rect.collidepoint(event.pos):
                     req = self.engine.choose_approach(approach)
                     self._build_card_buttons()
+                    self._build_potion_buttons()
+                    self._build_accessory_icons()
                     self._current_word = []
                     self._error_message = ""
                     self.state = GameState.PLAY_WORD
@@ -310,31 +447,31 @@ class App:
         # HP
         hp_text = f"HP: {eng.hp}/{eng.max_hp}"
         hp_color = DANGER_COLOR if eng.hp <= 2 else SUCCESS_COLOR
-        _draw_text_left(self.screen, hp_text, self.body_font, hp_color, 30, 20)
+        _draw_text_left(self.screen, hp_text, self.body_font, hp_color, 30, 40)
 
         # encounter counter
         total = eng.encounters_cleared + 1
         max_total = eng.encounters_cleared + len(eng._encounter_queue) + 1
         enc_text = f"Encounter {total}/{max_total}"
-        _draw_text_center(self.screen, enc_text, self.small_font, TEXT_COLOR, 20)
+        _draw_text_center(self.screen, enc_text, self.small_font, TEXT_COLOR, 40)
 
         # round counter
         round_text = f"Round {eng.current_round}/{eng.rounds_per_encounter}"
-        _draw_text_center(self.screen, round_text, self.body_font, ACCENT_COLOR, 50)
+        _draw_text_center(self.screen, round_text, self.body_font, ACCENT_COLOR, 70)
 
         # boss warning
         if eng.is_boss_encounter:
             _draw_text_center(self.screen, "⚠  BOSS  ⚠", self.heading_font,
-                              DANGER_COLOR, 80)
+                              DANGER_COLOR, 100)
 
         # encounter name & flavor
         enc = eng.current_encounter
         rd = eng.current_round_data
         _draw_text_center(self.screen, enc["name"], self.heading_font,
-                          ACCENT_COLOR, 130)
+                          ACCENT_COLOR, 150)
         if rd:
             _draw_text_center(self.screen, rd["flavor"], self.body_font,
-                              TEXT_COLOR, 190)
+                              TEXT_COLOR, 210)
 
         # approach buttons
         if rd:
@@ -347,13 +484,23 @@ class App:
             approaches = []
         self._approach_buttons: list[tuple[str, Button]] = []
         for i, (key, label) in enumerate(approaches):
-            y = 280 + i * 70
+            y = 400 + i * 70
             btn = Button(
                 pygame.Rect((WINDOW_W - 400) // 2, y, 400, 56),
                 label, self.body_font,
             )
             self._approach_buttons.append((key, btn))
             btn.draw(self.screen)
+
+        # potions (bottom-right)
+        self._layout_potions()
+        for pb in self._potion_buttons:
+            pb.draw(self.screen, self.small_font)
+
+        # accessories (bottom-left)
+        self._layout_accessories()
+        for ai in self._accessory_icons:
+            ai.draw(self.screen, self.small_font)
 
     # ── PLAY WORD (Phase B) ──────────────────────────────────────────────
 
@@ -365,15 +512,51 @@ class App:
             cb = CardButton(letter, i)
             self._card_buttons.append(cb)
 
+    def _build_potion_buttons(self):
+        """Rebuild potion buttons from the engine's current potions."""
+        self._potion_buttons = []
+        for i, key in enumerate(self.engine.potions):
+            self._potion_buttons.append(PotionButton(key, i))
+
+    def _build_accessory_icons(self):
+        """Rebuild accessory icons from the engine's current accessories."""
+        self._accessory_icons = []
+        for i, key in enumerate(self.engine.accessories):
+            self._accessory_icons.append(AccessoryIcon(key, i))
+
     def _layout_cards(self):
-        """Position card buttons in a row at the bottom."""
+        """Position card buttons in a row at ~2/3 vertical."""
         n = len(self._card_buttons)
         total_w = n * CARD_W + (n - 1) * CARD_GAP
         start_x = (WINDOW_W - total_w) // 2
-        y = WINDOW_H - CARD_H - 30
+        y = WINDOW_H * 2 // 3 - CARD_H // 2
         for i, cb in enumerate(self._card_buttons):
             cb.rect.x = start_x + i * (CARD_W + CARD_GAP)
             cb.rect.y = y
+
+    def _layout_potions(self):
+        """Position potion buttons in a row at the bottom-right."""
+        n = len(self._potion_buttons)
+        if n == 0:
+            return
+        total_w = n * POTION_W + (n - 1) * POTION_GAP
+        start_x = WINDOW_W - total_w - 30
+        y = WINDOW_H - POTION_H - 30
+        for i, pb in enumerate(self._potion_buttons):
+            pb.rect.x = start_x + i * (POTION_W + POTION_GAP)
+            pb.rect.y = y
+
+    def _layout_accessories(self):
+        """Position accessory icons in a row at the bottom-left."""
+        n = len(self._accessory_icons)
+        if n == 0:
+            return
+        total_w = n * ACC_W + (n - 1) * ACC_GAP
+        start_x = 30
+        y = WINDOW_H - ACC_H - 30
+        for i, ai in enumerate(self._accessory_icons):
+            ai.rect.x = start_x + i * (ACC_W + ACC_GAP)
+            ai.rect.y = y
 
     def _play_word_event(self, event: pygame.event.Event):
         # card clicks
@@ -388,6 +571,22 @@ class App:
                     self._current_word.append(cb.letter)
                 self._error_message = ""
                 return
+
+        # potion clicks
+        for pb in self._potion_buttons:
+            if pb.handle_event(event):
+                result = self.engine.use_potion(pb.index)
+                if result:
+                    # Rebuild UI after potion use
+                    self._build_card_buttons()
+                    self._build_potion_buttons()
+                    self._current_word = []
+                    self._error_message = f"Used {result['name']}!"
+                return
+
+        # accessory hover
+        for ai in self._accessory_icons:
+            ai.handle_event(event)
 
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             # submit
@@ -411,6 +610,7 @@ class App:
     def _draw_play_word(self):
         eng = self.engine
 
+        # ── top bar ──────────────────────────────────────────────────
         # HP
         hp_text = f"HP: {eng.hp}/{eng.max_hp}"
         hp_color = DANGER_COLOR if eng.hp <= 2 else SUCCESS_COLOR
@@ -421,24 +621,27 @@ class App:
         deck_surf = self.small_font.render(deck_text, True, (160, 160, 200))
         self.screen.blit(deck_surf, (WINDOW_W - deck_surf.get_width() - 30, 24))
 
+        # ── info text (upper-middle, ~1/3 vertical) ──────────────────
+        info_y = WINDOW_H // 3
+
         # requirement
         req_text = f"Requirement: {eng.current_requirement} pts"
-        _draw_text_center(self.screen, req_text, self.body_font, ACCENT_COLOR, 20)
+        _draw_text_center(self.screen, req_text, self.body_font, ACCENT_COLOR, info_y)
 
         # round counter
         round_text = f"Round {eng.current_round}/{eng.rounds_per_encounter}"
-        _draw_text_center(self.screen, round_text, self.small_font, TEXT_COLOR, 50)
+        _draw_text_center(self.screen, round_text, self.small_font, TEXT_COLOR, info_y + 30)
 
         # prompt
         rd = eng.current_round_data
         prompt = rd["prompt"] if rd else "Choose your word..."
-        _draw_text_center(self.screen, prompt, self.body_font, TEXT_COLOR, 80)
+        _draw_text_center(self.screen, prompt, self.body_font, TEXT_COLOR, info_y + 60)
 
         # current word display
         word_display = "".join(self._current_word).upper() if self._current_word else "___"
         word_color = ACCENT_COLOR if self._current_word else (100, 100, 120)
         _draw_text_center(self.screen, word_display, self.heading_font,
-                          word_color, 140)
+                          word_color, info_y + 120)
 
         # live score preview
         if self._current_word:
@@ -447,20 +650,21 @@ class App:
             score_text = f"Score: {preview_score} pts / {req} pts"
             score_color = SUCCESS_COLOR if preview_score >= req else DANGER_COLOR
             _draw_text_center(self.screen, score_text, self.small_font,
-                              score_color, 185)
+                              score_color, info_y + 165)
 
         # error message
         if self._error_message:
             _draw_text_center(self.screen, self._error_message, self.body_font,
-                              DANGER_COLOR, 190)
+                              DANGER_COLOR, info_y + 170)
 
-        # cards
+        # ── cards (lower-middle, ~2/3 vertical) ──────────────────────
         self._layout_cards()
         for cb in self._card_buttons:
             cb.draw(self.screen, self.card_font, self.small_font)
 
-        # submit / clear buttons
-        btn_y = WINDOW_H - CARD_H - 100
+        # submit / clear buttons (just below cards)
+        card_y = WINDOW_H * 2 // 3 - CARD_H // 2
+        btn_y = card_y + CARD_H + 10
         self._submit_btn = Button(
             pygame.Rect(WINDOW_W // 2 + 20, btn_y, 160, 48),
             "Submit Word", self.small_font,
@@ -471,6 +675,16 @@ class App:
         )
         self._submit_btn.draw(self.screen)
         self._clear_btn.draw(self.screen)
+
+        # potions (bottom-right)
+        self._layout_potions()
+        for pb in self._potion_buttons:
+            pb.draw(self.screen, self.small_font)
+
+        # accessories (bottom-left)
+        self._layout_accessories()
+        for ai in self._accessory_icons:
+            ai.draw(self.screen, self.small_font)
 
     # ── RESULT overlay ───────────────────────────────────────────────────
 
@@ -536,6 +750,8 @@ class App:
                 self.state = GameState.GAME_OVER
             else:
                 self._build_card_buttons()
+                self._build_potion_buttons()
+                self._build_accessory_icons()
                 self._current_word = []
                 self._error_message = ""
                 self.state = GameState.PLAY_WORD
@@ -554,10 +770,10 @@ class App:
                 self.state = GameState.VICTORY
             else:
                 eng.next_encounter()
-                self.state = GameState.ENCOUNTER
+                self._enter_encounter()
         else:
             # more rounds in this encounter — go back to approach selection
-            self.state = GameState.ENCOUNTER
+            self._enter_encounter()
 
     # ── GAME OVER ────────────────────────────────────────────────────────
 

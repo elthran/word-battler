@@ -6,6 +6,7 @@ from data import (
     LETTER_VALUES, STARTING_DECK, HAND_SIZE, MAX_HP,
     ENCOUNTERS_BEFORE_BOSS, ROUNDS_PER_ENCOUNTER, ARCHETYPES,
     ENCOUNTER_POOL, BOSS_ENCOUNTER,
+    POTIONS, POTION_KEYS, ACCESSORIES, ACCESSORY_KEYS,
 )
 
 
@@ -29,7 +30,7 @@ class GameEngine:
         # ── Player state ────────────────────────────────────────────────
         self.hp = MAX_HP
         self.max_hp = MAX_HP
-        self.hand_size = HAND_SIZE + self.hand_bonus
+        self._base_hand_size = HAND_SIZE + self.hand_bonus
         self.encounters_cleared = 0
 
         # ── Current encounter ───────────────────────────────────────────
@@ -43,6 +44,15 @@ class GameEngine:
         self._deck: list[str] = list(STARTING_DECK)
         self._discard: list[str] = []
         self._hand: list[str] = []
+
+        # ── Accessories (must init before drawing cards — hand_size depends on it)
+        self._accessories: list[str] = []
+        self._init_accessories()
+
+        # ── Potions ─────────────────────────────────────────────────────
+        self._potions: list[str] = []
+        self._init_potions()
+
         random.shuffle(self._deck)
         self._draw_cards(self.hand_size)
 
@@ -72,11 +82,68 @@ class GameEngine:
         self._encounter_queue = pool[:ENCOUNTERS_BEFORE_BOSS]
         self._encounter_queue.append(BOSS_ENCOUNTER)
 
+    # ── Potions ──────────────────────────────────────────────────────────
+
+    def _init_potions(self):
+        """Start the game with 3 random potions."""
+        keys = list(POTION_KEYS)
+        random.shuffle(keys)
+        self._potions = keys[:3]
+
+    def use_potion(self, index: int) -> dict | None:
+        """Use the potion at *index* (0-2). Returns effect info or None."""
+        if index < 0 or index >= len(self._potions):
+            return None
+        key = self._potions.pop(index)
+        potion = POTIONS[key]
+        effect = potion["effect"]
+
+        if effect == "shuffle":
+            # Shuffle hand into deck and redraw to previous hand count
+            previous_count = len(self._hand)
+            self._deck.extend(self._hand)
+            self._hand = []
+            random.shuffle(self._deck)
+            self._draw_cards(previous_count)
+        elif effect == "healing":
+            self.hp = min(self.max_hp, self.hp + 5)
+        elif effect == "wildcard":
+            # Add a temporary wildcard to hand (doesn't go to deck/discard)
+            self._hand.append("*")
+
+        return {"key": key, "name": potion["name"], "effect": effect}
+
+    def _maybe_gain_potion(self):
+        """50% chance to gain a random potion after an encounter."""
+        if random.random() < 0.5:
+            key = random.choice(POTION_KEYS)
+            self._potions.append(key)
+
+    # ── Accessories ──────────────────────────────────────────────────────
+
+    def _init_accessories(self):
+        """Start the game with 1 random accessory."""
+        self._accessories = [random.choice(ACCESSORY_KEYS)]
+
+    def _gain_random_accessory(self):
+        """Add a random accessory (no duplicates)."""
+        available = [k for k in ACCESSORY_KEYS if k not in self._accessories]
+        if available:
+            self._accessories.append(random.choice(available))
+
     # ── Properties ──────────────────────────────────────────────────────
 
     @property
     def hand(self) -> list[str]:
         return list(self._hand)
+
+    @property
+    def hand_size(self) -> int:
+        """Dynamic hand size including accessory bonuses."""
+        size = self._base_hand_size
+        if "extra_draw" in self._accessories:
+            size += 1
+        return size
 
     @property
     def deck_size(self) -> int:
@@ -97,6 +164,14 @@ class GameEngine:
     @property
     def is_boss_encounter(self) -> bool:
         return self.encounters_cleared == ENCOUNTERS_BEFORE_BOSS
+
+    @property
+    def potions(self) -> list[str]:
+        return list(self._potions)
+
+    @property
+    def accessories(self) -> list[str]:
+        return list(self._accessories)
 
     @property
     def is_encounter_finished(self) -> bool:
@@ -130,10 +205,14 @@ class GameEngine:
 
     def advance_round(self):
         """Move to the next round.  If the encounter is finished, increment
-        ``encounters_cleared``."""
+        ``encounters_cleared`` and grant rewards."""
         self.current_round += 1
         if self.is_encounter_finished:
             self.encounters_cleared += 1
+            # Grant post-encounter rewards (not after boss/victory)
+            if not self.is_victory:
+                self._maybe_gain_potion()
+                self._gain_random_accessory()
 
     def choose_approach(self, approach: str) -> int:
         """Lock in an approach and return the (adjusted) point requirement."""
@@ -223,13 +302,50 @@ class GameEngine:
         }
 
     def calculate_score(self, word: str) -> int:
-        """Return the point value of *word*, applying archetype bonuses."""
+        """Return the point value of *word*, applying archetype & accessory bonuses."""
+        w = word.lower()
         total = 0
-        for ch in word.lower():
+        for ch in w:
             if ch == '*':
                 total += self.wildcard_bonus
             else:
                 total += LETTER_VALUES.get(ch, 0)
+
+        # ── Accessory bonuses ──────────────────────────────────────────
+        # wildcard_plus: wildcards worth +1
+        if "wildcard_plus" in self._accessories:
+            wildcard_count = w.count('*')
+            total += wildcard_count * 1
+
+        # double_letter: two of the same letter → +2
+        if "double_letter" in self._accessories:
+            letter_counts: dict[str, int] = {}
+            for ch in w:
+                if ch != '*':
+                    letter_counts[ch] = letter_counts.get(ch, 0) + 1
+            for count in letter_counts.values():
+                if count >= 2:
+                    total += 2
+
+        # vowel_bonus: 2+ vowels → +1
+        if "vowel_bonus" in self._accessories:
+            vowels = set("aeiou")
+            vowel_count = sum(1 for ch in w if ch in vowels)
+            if vowel_count >= 2:
+                total += 1
+
+        # long_word: 5+ letters → +3
+        if "long_word" in self._accessories:
+            if len(w) >= 5:
+                total += 3
+
+        # consonant_bonus: 3+ consonants → +2
+        if "consonant_bonus" in self._accessories:
+            vowels = set("aeiou")
+            consonant_count = sum(1 for ch in w if ch not in vowels and ch != '*')
+            if consonant_count >= 3:
+                total += 2
+
         return total
 
     def _narrative_result(self, success: bool, damage: int) -> str:
