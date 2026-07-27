@@ -10,7 +10,7 @@ from data import (
     MODIFIERS, BOSS_MODIFIERS,
     POTIONS, POTION_KEYS, ACCESSORIES, ACCESSORY_KEYS,
 )
-from openai_scorer import score_word
+from openai_scorer import score_word, generate_story_round, generate_approaches
 
 
 class GameEngine:
@@ -67,6 +67,11 @@ class GameEngine:
 
         # ── Played words (for OpenAI uniqueness scoring) ───────────────
         self._played_words: list[str] = []
+
+        # ── Story generation tracking ─────────────────────────────────
+        self._story_so_far: list[dict] = []       # {flavor, prompt, word} per round
+        self._generated_round_data: dict | None = None  # generated flavor/prompt for current round
+        self._generated_approaches: dict | None = None  # generated approach descriptions
 
         random.shuffle(self._deck)
         self._draw_cards(self.hand_size)
@@ -204,13 +209,22 @@ class GameEngine:
 
     @property
     def current_round_data(self) -> dict | None:
-        """Return the dict for the current round (flavor, prompt, requirements)."""
+        """Return the dict for the current round (flavor, prompt, requirements).
+
+        If story generation produced custom flavor/prompt, those override the
+        static data.  Otherwise falls back to the static encounter data.
+        """
         if self.current_encounter is None:
             return None
         rounds = self.current_encounter.get("rounds", [])
         idx = self.current_round - 1
         if 0 <= idx < len(rounds):
-            return rounds[idx]
+            rd = dict(rounds[idx])
+            # Override with generated story if available
+            if self._generated_round_data is not None:
+                rd["flavor"] = self._generated_round_data.get("flavor", rd.get("flavor", ""))
+                rd["prompt"] = self._generated_round_data.get("prompt", rd.get("prompt", ""))
+            return rd
         return None
 
     @property
@@ -315,6 +329,10 @@ class GameEngine:
         self.current_approach = None
         self.current_requirement = 0
         self.current_round = 1
+        self._story_so_far = []
+        self._generated_round_data = None
+        self._generated_approaches = None
+        self._generate_approaches_for_encounter()
         return dict(self.current_encounter)
 
     def advance_round(self):
@@ -328,6 +346,93 @@ class GameEngine:
                 self._maybe_gain_potion()
                 self._gain_random_accessory()
 
+    def _generate_story_for_round(self):
+        """Call the OpenAI API to generate dynamic flavor/prompt for the current round.
+
+        Falls back to static encounter data if the API call fails.
+        """
+        self._generated_round_data = None
+        enc = self.current_encounter
+        if enc is None:
+            return
+
+        # Get modifier name
+        modifier_key = enc.get("modifier", "")
+        mod = BOSS_MODIFIERS.get(modifier_key) or MODIFIERS.get(modifier_key, {})
+        modifier_name = mod.get("name", "None")
+
+        rounds = enc.get("rounds", [])
+        idx = self.current_round - 1
+        if idx < 0 or idx >= len(rounds):
+            return
+
+        try:
+            result = generate_story_round(
+                encounter_name=enc.get("name", "Unknown"),
+                modifier_name=modifier_name,
+                approach=self.current_approach or "aggressive",
+                requirement=self.current_requirement,
+                round_number=self.current_round,
+                total_rounds=len(rounds),
+                story_so_far=self._story_so_far,
+                game_id=self.game_id,
+            )
+            if result.get("flavor") and result.get("prompt"):
+                self._generated_round_data = result
+        except Exception:
+            pass  # Fall back to static data
+
+    def _generate_approaches_for_encounter(self):
+        """Call the OpenAI API to generate approach descriptions for the current encounter.
+
+        Falls back to generic descriptions if the API call fails.
+        """
+        self._generated_approaches = None
+        enc = self.current_encounter
+        if enc is None:
+            return
+
+        # Get modifier name
+        modifier_key = enc.get("modifier", "")
+        mod = BOSS_MODIFIERS.get(modifier_key) or MODIFIERS.get(modifier_key, {})
+        modifier_name = mod.get("name", "None")
+
+        rounds = enc.get("rounds", [])
+        if not rounds:
+            return
+
+        # Use the first round's requirements
+        rd0 = rounds[0]
+        aggressive_req = max(1, rd0.get("aggressive", 10) + self.aggressive_bonus)
+        charisma_req = rd0.get("charisma", 10)
+        intelligence_req = rd0.get("intelligence", 10)
+
+        try:
+            result = generate_approaches(
+                encounter_name=enc.get("name", "Unknown"),
+                modifier_name=modifier_name,
+                aggressive_req=aggressive_req,
+                charisma_req=charisma_req,
+                intelligence_req=intelligence_req,
+                story_so_far=self._story_so_far,
+                game_id=self.game_id,
+            )
+            if result.get("aggressive") and result.get("charisma") and result.get("intelligence"):
+                self._generated_approaches = result
+        except Exception:
+            pass  # Fall back to generic descriptions
+
+    @property
+    def approach_descriptions(self) -> dict:
+        """Return generated approach descriptions, or generic fallbacks."""
+        if self._generated_approaches:
+            return dict(self._generated_approaches)
+        return {
+            "aggressive": "Approach it aggressively",
+            "charisma": "Approach it charismatically",
+            "intelligence": "Approach it intelligently",
+        }
+
     def choose_approach(self, approach: str) -> int:
         """Lock in an approach and return the (adjusted) point requirement."""
         rd = self.current_round_data
@@ -340,6 +445,10 @@ class GameEngine:
 
         self.current_approach = approach
         self.current_requirement = max(1, base)
+
+        # Generate story for this round now that we know the approach
+        self._generate_story_for_round()
+
         return self.current_requirement
 
     # ── Word play ───────────────────────────────────────────────────────
@@ -453,6 +562,15 @@ class GameEngine:
 
         # 7.  Track played word for uniqueness scoring
         self._played_words.append(resolved)
+
+        # 7b. Record this round in the story so far (for future story generation)
+        rd = self.current_round_data
+        if rd:
+            self._story_so_far.append({
+                "flavor": rd.get("flavor", ""),
+                "prompt": rd.get("prompt", ""),
+                "word": resolved,
+            })
 
         # 8.  Generate narrative
         narrative = self._narrative_result(round_success, damage)

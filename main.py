@@ -48,10 +48,52 @@ def _draw_text_left(
     screen.blit(surf, (x, y))
 
 
+def _draw_text_center_multiline(
+    screen: pygame.Surface, text: str, font: pygame.font.Font,
+    color: tuple, y: int, max_width: int | None = None,
+) -> int:
+    """Draw text centered, splitting on '. ' for natural line breaks.
+
+    Returns the y position after the last line drawn.
+    """
+    if max_width is None:
+        max_width = WINDOW_W - 100
+
+    # Split on sentence boundaries: ". " or "! " or "? "
+    sentences = []
+    current = ""
+    i = 0
+    while i < len(text):
+        current += text[i]
+        if text[i] in ('.', '!', '?') and i + 1 < len(text) and text[i + 1] == ' ':
+            sentences.append(current.strip())
+            current = ""
+            i += 2  # skip the punctuation and the space
+            continue
+        i += 1
+    if current.strip():
+        sentences.append(current.strip())
+
+    # If no sentence breaks found, just render as one line
+    if len(sentences) <= 1:
+        surf = font.render(text, True, color)
+        x = (WINDOW_W - surf.get_width()) // 2
+        screen.blit(surf, (x, y))
+        return y + surf.get_height()
+
+    line_height = font.get_height() + 4
+    for sentence in sentences:
+        surf = font.render(sentence, True, color)
+        x = (WINDOW_W - surf.get_width()) // 2
+        screen.blit(surf, (x, y))
+        y += line_height
+    return y
+
+
 # ── Button ───────────────────────────────────────────────────────────────────
 
 class Button:
-    """A clickable rectangle with text."""
+    """A clickable rectangle with text and optional subtitle."""
 
     def __init__(
         self, rect: pygame.Rect, text: str,
@@ -60,6 +102,8 @@ class Button:
         hover_color: tuple = BUTTON_HOVER,
         text_color: tuple = TEXT_COLOR,
         disabled: bool = False,
+        subtitle: str = "",
+        subtitle_color: tuple | None = None,
     ):
         self.rect = rect
         self.text = text
@@ -68,6 +112,8 @@ class Button:
         self.hover_color = hover_color
         self.text_color = text_color
         self.disabled = disabled
+        self.subtitle = subtitle
+        self.subtitle_color = subtitle_color or (180, 200, 220)
         self._hovered = False
 
     def handle_event(self, event: pygame.event.Event) -> bool:
@@ -87,10 +133,24 @@ class Button:
             color = BUTTON_DISABLED
         pygame.draw.rect(screen, color, self.rect, border_radius=8)
         pygame.draw.rect(screen, CARD_BORDER, self.rect, width=2, border_radius=8)
-        surf = self.font.render(self.text, True, self.text_color)
-        tx = self.rect.centerx - surf.get_width() // 2
-        ty = self.rect.centery - surf.get_height() // 2
-        screen.blit(surf, (tx, ty))
+
+        if self.subtitle:
+            # Two-line layout: subtitle on top, main text below
+            sub_surf = self.font.render(self.subtitle, True, self.subtitle_color)
+            main_surf = self.font.render(self.text, True, self.text_color)
+            total_h = sub_surf.get_height() + main_surf.get_height() + 4
+            start_y = self.rect.centery - total_h // 2
+
+            sx = self.rect.centerx - sub_surf.get_width() // 2
+            screen.blit(sub_surf, (sx, start_y))
+
+            mx = self.rect.centerx - main_surf.get_width() // 2
+            screen.blit(main_surf, (mx, start_y + sub_surf.get_height() + 4))
+        else:
+            surf = self.font.render(self.text, True, self.text_color)
+            tx = self.rect.centerx - surf.get_width() // 2
+            ty = self.rect.centery - surf.get_height() // 2
+            screen.blit(surf, (tx, ty))
 
 
 # ── Card (hand) ──────────────────────────────────────────────────────────────
@@ -442,8 +502,12 @@ class App:
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             for key, btn in self._arch_buttons:
                 if btn.rect.collidepoint(event.pos):
+                    self._loading = True
+                    self._draw()
+                    pygame.display.flip()
                     self.engine = GameEngine(key)
                     self.engine.next_encounter()
+                    self._loading = False
                     self._enter_encounter()
 
     def _draw_archetype(self):
@@ -463,6 +527,10 @@ class App:
             self._arch_buttons.append((key, btn))
             btn.draw(self.screen)
 
+        if self._loading:
+            _draw_text_center(self.screen, "Loading...", self.body_font,
+                              ACCENT_COLOR, WINDOW_H - 80)
+
     # ── ENCOUNTER (Phase A) ──────────────────────────────────────────────
 
     def _enter_encounter(self):
@@ -481,7 +549,11 @@ class App:
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             for approach, btn in self._approach_buttons:
                 if btn.rect.collidepoint(event.pos):
+                    self._loading = True
+                    self._draw()
+                    pygame.display.flip()
                     req = self.engine.choose_approach(approach)
+                    self._loading = False
                     self._current_word = []
                     self._build_card_buttons()
                     self._build_potion_buttons()
@@ -512,42 +584,55 @@ class App:
             _draw_text_center(self.screen, "⚠  BOSS  ⚠", self.heading_font,
                               DANGER_COLOR, 100)
 
-        # encounter name & flavor
+        # encounter name & flavor (multiline)
         enc = eng.current_encounter
         rd = eng.current_round_data
         enc_name = eng.encounter_name
         _draw_text_center(self.screen, f"Blocked by a {enc_name}",
                           self.heading_font, ACCENT_COLOR, 150)
+        next_y = 210
         if rd:
-            _draw_text_center(self.screen, rd["flavor"], self.body_font,
-                              TEXT_COLOR, 210)
+            next_y = _draw_text_center_multiline(
+                self.screen, rd["flavor"], self.body_font,
+                TEXT_COLOR, next_y,
+            )
 
         # modifier display
         modifier_key = enc.get("modifier")
         if modifier_key:
             mod = BOSS_MODIFIERS.get(modifier_key) or MODIFIERS.get(modifier_key)
             if mod:
+                next_y += 10
                 mod_text = f"⚡ Modifier: {mod['name']}"
                 _draw_text_center(self.screen, mod_text, self.small_font,
-                                  ACCENT_COLOR, 250)
+                                  ACCENT_COLOR, next_y)
+                next_y += 25
                 _draw_text_center(self.screen, mod['description'], self.small_font,
-                                  (200, 200, 220), 275)
+                                  (200, 200, 220), next_y)
+                next_y += 30
 
-        # approach buttons
+        # approach buttons with generated descriptions inside
         if rd:
+            approach_descs = eng.approach_descriptions
             approaches = [
-                ("aggressive", f"Aggressive (Req: {max(1, rd['aggressive'] + eng.aggressive_bonus)} pts)"),
-                ("charisma", f"Charisma (Req: {rd['charisma']} pts)"),
-                ("intelligence", f"Intelligence (Req: {rd['intelligence']} pts)"),
+                ("aggressive", f"Aggressive (Req: {max(1, rd['aggressive'] + eng.aggressive_bonus)} pts)",
+                 approach_descs.get("aggressive", "")),
+                ("charisma", f"Charisma (Req: {rd['charisma']} pts)",
+                 approach_descs.get("charisma", "")),
+                ("intelligence", f"Intelligence (Req: {rd['intelligence']} pts)",
+                 approach_descs.get("intelligence", "")),
             ]
         else:
             approaches = []
+
+        next_y = max(next_y + 10, 360)
         self._approach_buttons: list[tuple[str, Button]] = []
-        for i, (key, label) in enumerate(approaches):
-            y = 400 + i * 70
+        for i, (key, label, desc) in enumerate(approaches):
+            y = next_y + i * 80
             btn = Button(
-                pygame.Rect((WINDOW_W - 400) // 2, y, 400, 56),
-                label, self.body_font,
+                pygame.Rect((WINDOW_W - 400) // 2, y, 400, 68),
+                label, self.small_font,
+                subtitle=desc,
             )
             self._approach_buttons.append((key, btn))
             btn.draw(self.screen)
@@ -561,6 +646,11 @@ class App:
         self._layout_accessories()
         for ai in self._accessory_icons:
             ai.draw(self.screen, self.small_font)
+
+        # loading indicator
+        if self._loading:
+            _draw_text_center(self.screen, "Loading...", self.body_font,
+                              ACCENT_COLOR, WINDOW_H - 80)
 
     # ── PLAY WORD (Phase B) ──────────────────────────────────────────────
 
@@ -1143,7 +1233,11 @@ class App:
             if eng.is_victory:
                 self.state = GameState.VICTORY
             else:
+                self._loading = True
+                self._draw()
+                pygame.display.flip()
                 eng.next_encounter()
+                self._loading = False
                 self._enter_encounter()
         else:
             # more rounds in this encounter — go back to approach selection

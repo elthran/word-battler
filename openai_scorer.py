@@ -1,11 +1,8 @@
-"""OpenAI-powered word scoring for Word Battler.
+"""OpenAI-powered word scoring and story generation for Word Battler.
 
-Calls the OpenAI API to rate a word on three dimensions:
-1. Exoticness / interest — how unusual or interesting the word is
-2. Suitability — how well the word fits into the given sentence
-3. Uniqueness — how different the word is from previously played words
-
-Returns an additive bonus (-2 to +3) and two multipliers (0.75x-1.25x, 0.75x-1.25x).
+Calls the OpenAI API to:
+1. Rate a word on three dimensions (exoticness, suitability, uniqueness)
+2. Generate dynamic encounter flavor text and prompts
 
 All requests and responses are logged to ``logs/openai/<game_id>.jsonl``.
 """
@@ -22,9 +19,16 @@ load_dotenv(".env.local")
 
 LOG_DIR = Path(__file__).parent / "logs" / "openai"
 
-_PROMPT_PATH = Path(__file__).parent / "openai_prompt.txt"
-with open(_PROMPT_PATH, "r", encoding="utf-8") as _f:
-    SYSTEM_PROMPT = _f.read()
+_PROMPTS_DIR = Path(__file__).parent / "prompts"
+
+with open(_PROMPTS_DIR / "scoring.txt", "r", encoding="utf-8") as _f:
+    SCORING_SYSTEM_PROMPT = _f.read()
+
+with open(_PROMPTS_DIR / "story.txt", "r", encoding="utf-8") as _f:
+    STORY_SYSTEM_PROMPT = _f.read()
+
+with open(_PROMPTS_DIR / "approaches.txt", "r", encoding="utf-8") as _f:
+    APPROACHES_SYSTEM_PROMPT = _f.read()
 
 
 def _get_client() -> OpenAI:
@@ -93,7 +97,7 @@ def score_word(sentence: str, word: str, game_id: str = "unknown",
         "word": word,
         "played_words": played_words,
         "model": _OPENAI_MODEL,
-        "system_prompt": SYSTEM_PROMPT,
+        "system_prompt": SCORING_SYSTEM_PROMPT,
         "user_prompt": user_prompt,
     })
 
@@ -101,7 +105,7 @@ def score_word(sentence: str, word: str, game_id: str = "unknown",
     response = client.chat.completions.create(
         model=_OPENAI_MODEL,
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": SCORING_SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ],
         temperature=0.3,
@@ -141,6 +145,208 @@ def score_word(sentence: str, word: str, game_id: str = "unknown",
     # Log the response
     _log_entry(game_id, {
         "type": "response",
+        "timestamp": datetime.datetime.now().isoformat(),
+        "raw_content": raw_content,
+        "parsed": data,
+        "result": result,
+    })
+
+    return result
+
+
+def generate_story_round(
+    encounter_name: str,
+    modifier_name: str,
+    approach: str,
+    requirement: int,
+    round_number: int,
+    total_rounds: int,
+    story_so_far: list[dict],
+    game_id: str = "unknown",
+) -> dict:
+    """Call the OpenAI API to generate flavor text and a prompt for a round.
+
+    Args:
+        encounter_name: Name of the current encounter (e.g. "Goblin", "Dragon").
+        modifier_name: The modifier rule name (e.g. "No Vowel Start").
+        approach: The approach the player chose ("aggressive", "charisma", "intelligence").
+        requirement: The point requirement for this round.
+        round_number: Which round this is (1-based).
+        total_rounds: Total rounds in this encounter.
+        story_so_far: List of dicts for previous rounds, each with keys:
+            "flavor", "prompt", "word" (the word the player chose).
+        game_id: A unique identifier for this game session (used for logging).
+
+    Returns:
+        A dict with "flavor" and "prompt" strings.
+    """
+    # Build the story-so-far text
+    story_lines = []
+    for i, entry in enumerate(story_so_far):
+        story_lines.append(
+            f"Round {i + 1}:\n"
+            f"  flavor: \"{entry['flavor']}\"\n"
+            f"  prompt: \"{entry['prompt']}\"\n"
+            f"  player's word: \"{entry['word']}\""
+        )
+    story_text = "\n".join(story_lines) if story_lines else "(This is the first round — no story yet.)"
+
+    user_prompt = (
+        f"Encounter: {encounter_name}\n"
+        f"Modifier: {modifier_name}\n"
+        f"Approach: {approach}\n"
+        f"Requirement: {requirement} pts\n"
+        f"Round: {round_number} of {total_rounds}\n"
+        f"\n"
+        f"Story so far:\n{story_text}\n"
+        f"\n"
+        f"Generate the flavor and prompt for round {round_number}."
+    )
+
+    timestamp = datetime.datetime.now().isoformat()
+
+    # Log the request
+    _log_entry(game_id, {
+        "type": "story_request",
+        "timestamp": timestamp,
+        "encounter_name": encounter_name,
+        "modifier_name": modifier_name,
+        "approach": approach,
+        "requirement": requirement,
+        "round_number": round_number,
+        "total_rounds": total_rounds,
+        "story_so_far": story_so_far,
+        "model": _OPENAI_MODEL,
+        "system_prompt": STORY_SYSTEM_PROMPT,
+        "user_prompt": user_prompt,
+    })
+
+    client = _get_client()
+    response = client.chat.completions.create(
+        model=_OPENAI_MODEL,
+        messages=[
+            {"role": "system", "content": STORY_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ],
+        temperature=0.8,
+        max_tokens=300,
+    )
+
+    raw_content = response.choices[0].message.content.strip()
+    # Strip markdown code fences if present
+    if raw_content.startswith("```"):
+        raw_content = raw_content.split("\n", 1)[1]
+        raw_content = raw_content.rsplit("```", 1)[0]
+    raw_content = raw_content.strip()
+
+    data = json.loads(raw_content)
+    result = {
+        "flavor": data.get("flavor", ""),
+        "prompt": data.get("prompt", ""),
+    }
+
+    # Log the response
+    _log_entry(game_id, {
+        "type": "story_response",
+        "timestamp": datetime.datetime.now().isoformat(),
+        "raw_content": raw_content,
+        "parsed": data,
+        "result": result,
+    })
+
+    return result
+
+
+def generate_approaches(
+    encounter_name: str,
+    modifier_name: str,
+    aggressive_req: int,
+    charisma_req: int,
+    intelligence_req: int,
+    story_so_far: list[dict],
+    game_id: str = "unknown",
+) -> dict:
+    """Call the OpenAI API to generate short approach descriptions.
+
+    Args:
+        encounter_name: Name of the current encounter (e.g. "Goblin", "Dragon").
+        modifier_name: The modifier rule name (e.g. "No Vowel Start").
+        aggressive_req: Point requirement for aggressive approach.
+        charisma_req: Point requirement for charisma approach.
+        intelligence_req: Point requirement for intelligence approach.
+        story_so_far: List of dicts for previous rounds, each with keys:
+            "flavor", "prompt", "word" (the word the player chose).
+        game_id: A unique identifier for this game session (used for logging).
+
+    Returns:
+        A dict with "aggressive", "charisma", "intelligence" description strings.
+    """
+    # Build the story-so-far text
+    story_lines = []
+    for i, entry in enumerate(story_so_far):
+        story_lines.append(
+            f"Round {i + 1}:\n"
+            f"  flavor: \"{entry['flavor']}\"\n"
+            f"  prompt: \"{entry['prompt']}\"\n"
+            f"  player's word: \"{entry['word']}\""
+        )
+    story_text = "\n".join(story_lines) if story_lines else "(This is the first round — no story yet.)"
+
+    user_prompt = (
+        f"Encounter: {encounter_name}\n"
+        f"Modifier: {modifier_name}\n"
+        f"Requirements — Aggressive: {aggressive_req} pts, Charisma: {charisma_req} pts, Intelligence: {intelligence_req} pts\n"
+        f"\n"
+        f"Story so far:\n{story_text}\n"
+        f"\n"
+        f"Generate approach descriptions for this encounter."
+    )
+
+    timestamp = datetime.datetime.now().isoformat()
+
+    # Log the request
+    _log_entry(game_id, {
+        "type": "approaches_request",
+        "timestamp": timestamp,
+        "encounter_name": encounter_name,
+        "modifier_name": modifier_name,
+        "aggressive_req": aggressive_req,
+        "charisma_req": charisma_req,
+        "intelligence_req": intelligence_req,
+        "story_so_far": story_so_far,
+        "model": _OPENAI_MODEL,
+        "system_prompt": APPROACHES_SYSTEM_PROMPT,
+        "user_prompt": user_prompt,
+    })
+
+    client = _get_client()
+    response = client.chat.completions.create(
+        model=_OPENAI_MODEL,
+        messages=[
+            {"role": "system", "content": APPROACHES_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ],
+        temperature=0.8,
+        max_tokens=200,
+    )
+
+    raw_content = response.choices[0].message.content.strip()
+    # Strip markdown code fences if present
+    if raw_content.startswith("```"):
+        raw_content = raw_content.split("\n", 1)[1]
+        raw_content = raw_content.rsplit("```", 1)[0]
+    raw_content = raw_content.strip()
+
+    data = json.loads(raw_content)
+    result = {
+        "aggressive": data.get("aggressive", "Approach it aggressively"),
+        "charisma": data.get("charisma", "Approach it charismatically"),
+        "intelligence": data.get("intelligence", "Approach it intelligently"),
+    }
+
+    # Log the response
+    _log_entry(game_id, {
+        "type": "approaches_response",
         "timestamp": datetime.datetime.now().isoformat(),
         "raw_content": raw_content,
         "parsed": data,
