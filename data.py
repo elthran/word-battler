@@ -23,7 +23,7 @@ STARTING_DECK: list[str] = [
 
 # ── Game rules ──────────────────────────────────────────────────────────────
 HAND_SIZE: int = 8
-MAX_HP: int = 5
+MAX_HP: int = 10
 ENCOUNTERS_BEFORE_BOSS: int = 3   # 3 normal encounters, then the boss
 ROUNDS_PER_ENCOUNTER: int = 3
 
@@ -122,17 +122,17 @@ ENCOUNTER_POOL: list[dict] = [
             {
                 "flavor": "A grimy goblin blocks the path, clutching a rusty dagger. It snarls and lunges at you!",
                 "prompt": "You sidestep its lunge and [ ______ ] it.",
-                "aggressive": 6, "charisma": 5, "intelligence": 7,
+                "aggressive": 18, "charisma": 15, "intelligence": 21,
             },
             {
                 "flavor": "The goblin staggers but isn't done yet. It spits on the ground and raises its blade again.",
                 "prompt": "Before it can strike, you [ ______ ] it.",
-                "aggressive": 7, "charisma": 6, "intelligence": 8,
+                "aggressive": 21, "charisma": 18, "intelligence": 24,
             },
             {
                 "flavor": "Bleeding and desperate, the goblin makes one final, wild charge!",
                 "prompt": "You stand your ground and [ ______ ] it.",
-                "aggressive": 8, "charisma": 7, "intelligence": 6,
+                "aggressive": 24, "charisma": 21, "intelligence": 18,
             },
         ],
     },
@@ -143,17 +143,17 @@ ENCOUNTER_POOL: list[dict] = [
             {
                 "flavor": "A rattling skeleton rises from a pile of bones, hollow eyes fixed on you. It clatters forward.",
                 "prompt": "Facing the skeleton, you [ ______ ] it.",
-                "aggressive": 7, "charisma": 6, "intelligence": 8,
+                "aggressive": 21, "charisma": 18, "intelligence": 24,
             },
             {
                 "flavor": "You crack a few ribs, but the skeleton reassembles itself with a dry clatter. It draws a rusty sword.",
                 "prompt": "As it swings, you [ ______ ] it.",
-                "aggressive": 8, "charisma": 7, "intelligence": 6,
+                "aggressive": 24, "charisma": 21, "intelligence": 18,
             },
             {
                 "flavor": "The skeleton's bones are splintering. Dark energy flickers in its eye sockets as it makes a final lunge.",
                 "prompt": "With one last effort, you [ ______ ] it.",
-                "aggressive": 6, "charisma": 8, "intelligence": 7,
+                "aggressive": 18, "charisma": 24, "intelligence": 21,
             },
         ],
     },
@@ -164,17 +164,17 @@ ENCOUNTER_POOL: list[dict] = [
             {
                 "flavor": "A hooded mage crackles with dark energy, muttering an incantation. Purple lightning arcs from their fingertips.",
                 "prompt": "Before the spell completes, you [ ______ ] the mage.",
-                "aggressive": 8, "charisma": 7, "intelligence": 6,
+                "aggressive": 24, "charisma": 21, "intelligence": 18,
             },
             {
                 "flavor": "The mage snarls and teleports behind you. 'You'll have to do better than that!'",
                 "prompt": "You spin around and [ ______ ] the mage.",
-                "aggressive": 6, "charisma": 8, "intelligence": 7,
+                "aggressive": 18, "charisma": 24, "intelligence": 21,
             },
             {
                 "flavor": "Robes smoldering, the mage begins a forbidden ritual. The ground beneath you trembles.",
                 "prompt": "You disrupt the ritual and [ ______ ] the mage.",
-                "aggressive": 7, "charisma": 6, "intelligence": 8,
+                "aggressive": 21, "charisma": 18, "intelligence": 24,
             },
         ],
     },
@@ -185,17 +185,17 @@ ENCOUNTER_POOL: list[dict] = [
             {
                 "flavor": "A hulking troll lumbers toward you, club dragging on the ground. Each step shakes the earth.",
                 "prompt": "You duck under its swing and [ ______ ] it.",
-                "aggressive": 9, "charisma": 8, "intelligence": 10,
+                "aggressive": 27, "charisma": 24, "intelligence": 30,
             },
             {
                 "flavor": "The troll roars in fury, swinging its club in a wide arc. Spittle flies from its tusks.",
                 "prompt": "You dodge the blow and [ ______ ] it.",
-                "aggressive": 8, "charisma": 10, "intelligence": 7,
+                "aggressive": 24, "charisma": 30, "intelligence": 21,
             },
             {
                 "flavor": "The troll is wounded but enraged. It raises its club high for a crushing overhead smash!",
                 "prompt": "In that split second, you [ ______ ] it.",
-                "aggressive": 10, "charisma": 7, "intelligence": 8,
+                "aggressive": 30, "charisma": 21, "intelligence": 24,
             },
         ],
     },
@@ -206,17 +206,17 @@ ENCOUNTER_POOL: list[dict] = [
             {
                 "flavor": "A masked bandit leaps from the shadows, a curved dagger glinting. 'Your gold or your life!'",
                 "prompt": "You look the bandit in the eye and [ ______ ] it.",
-                "aggressive": 7, "charisma": 8, "intelligence": 6,
+                "aggressive": 21, "charisma": 24, "intelligence": 18,
             },
             {
                 "flavor": "The bandit curses and flips the dagger in their hand. 'Lucky shot. Let's see you do that again.'",
                 "prompt": "As the bandit circles you, you [ ______ ] it.",
-                "aggressive": 8, "charisma": 6, "intelligence": 7,
+                "aggressive": 24, "charisma": 18, "intelligence": 21,
             },
             {
                 "flavor": "Cornered and desperate, the bandit throws a handful of blinding powder at your face!",
                 "prompt": "Shielding your eyes, you [ ______ ] it.",
-                "aggressive": 6, "charisma": 7, "intelligence": 8,
+                "aggressive": 18, "charisma": 21, "intelligence": 24,
             },
         ],
     },
@@ -227,17 +227,17 @@ ENCOUNTER_POOL: list[dict] = [
             {
                 "flavor": "A massive spider drops from the ceiling, its many eyes glistening. It skitters toward you with terrifying speed.",
                 "prompt": "You brace yourself and [ ______ ] the spider.",
-                "aggressive": 7, "charisma": 6, "intelligence": 8,
+                "aggressive": 21, "charisma": 18, "intelligence": 24,
             },
             {
                 "flavor": "The spider scuttles up the wall and leaps at your face! Venom drips from its fangs.",
                 "prompt": "You dodge aside and [ ______ ] the spider.",
-                "aggressive": 8, "charisma": 7, "intelligence": 6,
+                "aggressive": 24, "charisma": 21, "intelligence": 18,
             },
             {
                 "flavor": "Wounded but furious, the spider spins a web strand and swings straight at you, fangs bared.",
                 "prompt": "With quick reflexes, you [ ______ ] the spider.",
-                "aggressive": 6, "charisma": 8, "intelligence": 7,
+                "aggressive": 18, "charisma": 24, "intelligence": 21,
             },
         ],
     },
@@ -248,17 +248,17 @@ ENCOUNTER_POOL: list[dict] = [
             {
                 "flavor": "A wailing ghost drifts through the wall, its translucent form flickering. An icy chill fills the air.",
                 "prompt": "You steel your nerves and [ ______ ] the ghost.",
-                "aggressive": 8, "charisma": 7, "intelligence": 6,
+                "aggressive": 24, "charisma": 21, "intelligence": 18,
             },
             {
                 "flavor": "The ghost lets out a piercing shriek that rattles your bones. It phases through your guard!",
                 "prompt": "You focus your will and [ ______ ] the ghost.",
-                "aggressive": 6, "charisma": 8, "intelligence": 7,
+                "aggressive": 18, "charisma": 24, "intelligence": 21,
             },
             {
                 "flavor": "The ghost gathers dark energy into a spectral orb, its form flickering between rage and sorrow.",
                 "prompt": "You stand tall and [ ______ ] the ghost.",
-                "aggressive": 7, "charisma": 6, "intelligence": 8,
+                "aggressive": 21, "charisma": 18, "intelligence": 24,
             },
         ],
     },
@@ -272,17 +272,17 @@ BOSS_POOL: list[dict] = [
             {
                 "flavor": "The ground shakes. A massive red dragon descends, smoke curling from its nostrils. It fixes its burning gaze on you.",
                 "prompt": "With everything on the line, you [ ______ ] the dragon.",
-                "aggressive": 12, "charisma": 10, "intelligence": 11,
+                "aggressive": 36, "charisma": 30, "intelligence": 33,
             },
             {
                 "flavor": "The dragon rears back, inhaling deeply. Flames gather in its throat — it's about to breathe fire!",
                 "prompt": "You dive for cover and [ ______ ] the dragon.",
-                "aggressive": 11, "charisma": 12, "intelligence": 10,
+                "aggressive": 33, "charisma": 36, "intelligence": 30,
             },
             {
                 "flavor": "The dragon's wings are tattered, its breath ragged. It lets out a deafening roar and lunges with claws bared.",
                 "prompt": "This is it. You [ ______ ] the dragon.",
-                "aggressive": 10, "charisma": 11, "intelligence": 12,
+                "aggressive": 30, "charisma": 33, "intelligence": 36,
             },
         ],
     },
@@ -293,17 +293,17 @@ BOSS_POOL: list[dict] = [
             {
                 "flavor": "A throne of bones rises before you. Upon it sits the Lich King, crowned in frost. His hollow gaze pierces your soul.",
                 "prompt": "You raise your weapon and [ ______ ] the Lich King.",
-                "aggressive": 11, "charisma": 12, "intelligence": 10,
+                "aggressive": 33, "charisma": 36, "intelligence": 30,
             },
             {
                 "flavor": "The Lich King raises a skeletal hand. Ice shards form in the air, each one aimed at your heart.",
                 "prompt": "You weave between the shards and [ ______ ] the Lich King.",
-                "aggressive": 12, "charisma": 10, "intelligence": 11,
+                "aggressive": 36, "charisma": 30, "intelligence": 33,
             },
             {
                 "flavor": "The Lich King descends from his throne, a blade of frozen shadow in his grip. The air itself freezes around you.",
                 "prompt": "With a final cry, you [ ______ ] the Lich King.",
-                "aggressive": 10, "charisma": 11, "intelligence": 12,
+                "aggressive": 30, "charisma": 33, "intelligence": 36,
             },
         ],
     },
@@ -365,6 +365,11 @@ ACCESSORIES: dict[str, dict] = {
         "name": "Stone Amulet",
         "description": "Using 3+ consonants in a word gives +2 points.",
         "effect": "consonant_bonus",
+    },
+    "vitality_core": {
+        "name": "Vitality Core",
+        "description": "Grants +3 maximum health.",
+        "effect": "vitality_core",
     },
 }
 

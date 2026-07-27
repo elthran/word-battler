@@ -337,11 +337,7 @@ class App:
                 self._victory_event(event)
 
     def _update(self, dt: int):
-        if self.state == GameState.RESULT:
-            self._result_timer -= dt
-            if self._result_timer <= 0:
-                self._result_timer = 0
-                self._advance_after_result()
+        pass
 
     def _draw(self):
         self.screen.fill(BG_COLOR)
@@ -616,6 +612,14 @@ class App:
                 self._current_word = []
                 self._error_message = ""
 
+            # shuffle
+            if self._shuffle_btn and self._shuffle_btn.rect.collidepoint(event.pos):
+                self.engine.shuffle_hand()
+                self._build_card_buttons()
+                # Deselect any selected cards since the hand changed
+                self._current_word = []
+                self._error_message = ""
+
     def _draw_play_word(self):
         eng = self.engine
 
@@ -716,21 +720,30 @@ class App:
         for cb in self._card_buttons:
             cb.draw(self.screen, self.card_font, self.small_font)
 
-        # submit / clear buttons (just below cards)
+        # submit / clear / shuffle buttons (just below cards)
         card_y = WINDOW_H * 2 // 3 - CARD_H // 2
         btn_y = card_y + CARD_H + 10
+        btn_w = 140
+        btn_gap = 15
+        total_w = 3 * btn_w + 2 * btn_gap
+        start_x = (WINDOW_W - total_w) // 2
         submit_disabled = len(self._current_word) == 0 or (modifier_violated and modifier_type == "blocking")
+        self._clear_btn = Button(
+            pygame.Rect(start_x, btn_y, btn_w, 48),
+            "Clear", self.small_font,
+        )
+        self._shuffle_btn = Button(
+            pygame.Rect(start_x + btn_w + btn_gap, btn_y, btn_w, 48),
+            "Shuffle Letters", self.small_font,
+        )
         self._submit_btn = Button(
-            pygame.Rect(WINDOW_W // 2 + 20, btn_y, 160, 48),
+            pygame.Rect(start_x + 2 * (btn_w + btn_gap), btn_y, btn_w, 48),
             "Submit Word", self.small_font,
             disabled=submit_disabled,
         )
-        self._clear_btn = Button(
-            pygame.Rect(WINDOW_W // 2 - 180, btn_y, 160, 48),
-            "Clear", self.small_font,
-        )
-        self._submit_btn.draw(self.screen)
         self._clear_btn.draw(self.screen)
+        self._shuffle_btn.draw(self.screen)
+        self._submit_btn.draw(self.screen)
 
         # reason text below submit button when blocked
         if submit_disabled and modifier_detail:
@@ -756,9 +769,9 @@ class App:
             self._advance_after_result()
 
     def _draw_result_overlay(self):
-        # dim background
+        # Full dark overlay so text is clearly readable
         overlay = pygame.Surface((WINDOW_W, WINDOW_H), pygame.SRCALPHA)
-        overlay.fill((0, 0, 0, 180))
+        overlay.fill((0, 0, 0, 200))
         self.screen.blit(overlay, (0, 0))
 
         data = self._result_data
@@ -769,46 +782,103 @@ class App:
             narrative = data.get("narrative", data["error"])
             _draw_text_center(self.screen, narrative, self.body_font,
                               DANGER_COLOR, 240)
+            _draw_text_center(self.screen, "Click to continue...", self.small_font,
+                              (160, 160, 180), 320)
+            return
+
+        score = data["score"]
+        req = data["requirement"]
+        resolved = data.get("resolved_word", "")
+        effective_score = data.get("effective_score", score)
+        ob = data.get("openai_bonus", {})
+        modifier_penalty = data.get("modifier_penalty", 0)
+        modifier_violated = data.get("modifier_violated", False)
+
+        # ── Draw a solid panel behind the results ─────────────────────
+        panel_w = 600
+        panel_h = 420
+        panel_x = (WINDOW_W - panel_w) // 2
+        panel_y = 140
+        panel_rect = pygame.Rect(panel_x, panel_y, panel_w, panel_h)
+        pygame.draw.rect(self.screen, PANEL_COLOR, panel_rect, border_radius=12)
+        pygame.draw.rect(self.screen, ACCENT_COLOR, panel_rect, width=2, border_radius=12)
+
+        y = panel_y + 20
+        line_h = 30
+
+        # ── 1. Your word ──────────────────────────────────────────────
+        if resolved:
+            _draw_text_center(self.screen, f"Your word: {resolved.upper()}",
+                              self.heading_font, ACCENT_COLOR, y)
+            y += 46
+
+        # ── 2. Modifier breakdown ─────────────────────────────────────
+        _draw_text_center(self.screen, "── Bonuses ──", self.small_font,
+                          (180, 180, 200), y)
+        y += line_h
+
+        # Exoticness
+        exoticness = ob.get("exoticness", 0)
+        additive_bonus = ob.get("additive_bonus", 0)
+        exotic_text = f"Exotic: {exoticness}/10  →  +{additive_bonus} score (max +3)"
+        _draw_text_center(self.screen, exotic_text, self.small_font,
+                          ACCENT_COLOR, y)
+        y += line_h
+
+        # Suitability
+        suitability = ob.get("suitability", 0)
+        multiplier = ob.get("multiplier", 1.0)
+        suit_text = f"Suitability: {suitability}/10  →  ×{multiplier:.1f} multiplier (max ×5.0)"
+        _draw_text_center(self.screen, suit_text, self.small_font,
+                          ACCENT_COLOR, y)
+        y += line_h
+
+        # Modifier penalty
+        if modifier_violated and modifier_penalty > 0:
+            penalty_text = f"Modifier penalty: -{modifier_penalty}"
+            _draw_text_center(self.screen, penalty_text, self.small_font,
+                              DANGER_COLOR, y)
+            y += line_h
+
+        # ── 3. Score calculation ──────────────────────────────────────
+        y += 4
+        _draw_text_center(self.screen, "── Score Calculation ──", self.small_font,
+                          (180, 180, 200), y)
+        y += line_h
+
+        calc_lines = []
+        calc_lines.append(f"Raw letter score: {score}")
+        if modifier_penalty > 0:
+            calc_lines.append(f"  − Modifier penalty: -{modifier_penalty}")
+            calc_lines.append(f"  = After penalty: {max(0, score - modifier_penalty)}")
+        if additive_bonus > 0:
+            calc_lines.append(f"  + Exotic bonus: +{additive_bonus}")
+        if multiplier != 1.0:
+            calc_lines.append(f"  × Suitability multiplier: ×{multiplier:.1f}")
+
+        for line in calc_lines:
+            _draw_text_center(self.screen, line, self.small_font,
+                              TEXT_COLOR, y)
+            y += line_h
+
+        total_text = f"  = Total score: {effective_score}"
+        _draw_text_center(self.screen, total_text, self.body_font,
+                          ACCENT_COLOR, y)
+        y += line_h + 6
+
+        # ── 4. Result ─────────────────────────────────────────────────
+        if data["round_success"]:
+            _draw_text_center(self.screen,
+                              f"✓ {effective_score} ≥ {req}  —  No damage!",
+                              self.body_font, SUCCESS_COLOR, y)
         else:
-            score = data["score"]
-            req = data["requirement"]
-            resolved = data.get("resolved_word", "")
-            narrative = data.get("narrative", "")
-
-            # narrative message
-            y = 200
-            if narrative:
-                _draw_text_center(self.screen, narrative, self.body_font,
-                                  TEXT_COLOR, y)
-                y += 40
-
-            # show the resolved word
-            if resolved:
-                _draw_text_center(self.screen, f"Word: {resolved.upper()}",
-                                  self.body_font, ACCENT_COLOR, y)
-                y += 36
-
-            # score line
-            effective_score = data.get("effective_score", score)
-            if data["round_success"]:
-                _draw_text_center(self.screen,
-                                  f"Score: {effective_score}/{req}  —  No damage!",
-                                  self.body_font, SUCCESS_COLOR, y)
-            else:
-                dmg = data["damage_to_player"]
-                _draw_text_center(self.screen,
-                                  f"Score: {effective_score}/{req}  —  Took {dmg} damage!",
-                                  self.body_font, DANGER_COLOR, y)
-            y += 36
-
-            # modifier violation message
-            if data.get("modifier_violated"):
-                _draw_text_center(self.screen, data["modifier_message"],
-                                  self.small_font, ACCENT_COLOR, y)
-                y += 30
+            dmg = data["damage_to_player"]
+            _draw_text_center(self.screen,
+                              f"✗ {effective_score} < {req}  —  Took {dmg} damage!",
+                              self.body_font, DANGER_COLOR, y)
 
         _draw_text_center(self.screen, "Click to continue...", self.small_font,
-                          (160, 160, 180), 320)
+                          (160, 160, 180), y + 40)
 
     def _advance_after_result(self):
         """Move to the next state after the result overlay."""

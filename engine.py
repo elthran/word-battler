@@ -2,6 +2,7 @@
 
 import random
 import os
+import datetime
 from data import (
     LETTER_VALUES, STARTING_DECK, HAND_SIZE, MAX_HP,
     ENCOUNTERS_BEFORE_BOSS, ROUNDS_PER_ENCOUNTER, ARCHETYPES,
@@ -9,12 +10,17 @@ from data import (
     MODIFIERS, BOSS_MODIFIERS,
     POTIONS, POTION_KEYS, ACCESSORIES, ACCESSORY_KEYS,
 )
+from openai_scorer import score_word
 
 
 class GameEngine:
     """Core game state and logic.  No rendering or I/O."""
 
     def __init__(self, archetype_key: str):
+        # ── Game session ID (for OpenAI log files) ──────────────────────
+        now = datetime.datetime.now()
+        self.game_id = now.strftime("game_%Y%m%d_%H%M%S")
+
         # ── Dictionary ──────────────────────────────────────────────────
         self._valid_words: set[str] = set()
         self._words_by_length: dict[int, set[str]] = {}
@@ -49,6 +55,11 @@ class GameEngine:
         # ── Accessories (must init before drawing cards — hand_size depends on it)
         self._accessories: list[str] = []
         self._init_accessories()
+
+        # Apply vitality_core bonus to max_hp
+        if "vitality_core" in self._accessories:
+            self.max_hp += 3
+            self.hp = self.max_hp  # heal to new max
 
         # ── Potions ─────────────────────────────────────────────────────
         self._potions: list[str] = []
@@ -138,6 +149,10 @@ class GameEngine:
     @property
     def hand(self) -> list[str]:
         return list(self._hand)
+
+    def shuffle_hand(self):
+        """Shuffle the current hand in place."""
+        random.shuffle(self._hand)
 
     @property
     def hand_size(self) -> int:
@@ -314,6 +329,23 @@ class GameEngine:
         modifier_penalty = modifier_result["penalty"] if modifier_result["violated"] else 0
         effective_score = max(0, score - modifier_penalty)
 
+        # 3d. OpenAI scoring — additive bonus from exoticness, multiplier from suitability
+        openai_bonus = {"additive_bonus": 0, "multiplier": 1.0, "exoticness": 0, "suitability": 0}
+        try:
+            rd = self.current_round_data
+            if rd:
+                sentence = rd.get("prompt", "")
+                openai_result = score_word(sentence, resolved, game_id=self.game_id)
+                openai_bonus = openai_result
+        except Exception:
+            pass  # If OpenAI call fails, just use no bonus
+
+        additive_bonus = openai_bonus["additive_bonus"]
+        multiplier = openai_bonus["multiplier"]
+
+        # Apply additive bonus first, then multiply
+        effective_score = max(0, int((effective_score + additive_bonus) * multiplier))
+
         # 4.  Damage (based on effective score after modifier penalty)
         damage = max(0, self.current_requirement - effective_score)
         self.hp = max(0, self.hp - damage)
@@ -337,6 +369,7 @@ class GameEngine:
             "modifier_violated": modifier_result["violated"],
             "modifier_penalty": modifier_penalty,
             "modifier_message": modifier_result["message"],
+            "openai_bonus": openai_bonus,
         }
 
     def calculate_score(self, word: str) -> int:
