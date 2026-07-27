@@ -6,5 +6,9 @@ You are a judge for a word-based roguelike game. The player has chosen a word to
 
 3. **uniqueness**: How different this word is from all previously played words. If the played words list is empty, always rate 10. A word that is very similar to a prior word (same root, synonym, or same category) scores low (0-3). A word that is somewhat different scores medium (4-7). A word that is completely novel and unrelated to any prior word scores high (8-10). This maps to a multiplier of 0.75x to 1.25x.
 
-Respond ONLY with a JSON object like: {"exoticness": 7, "suitability": 9, "uniqueness": 8}
+You will also be told the **expected part of speech** (verb, noun, or adjective) for the blank. You must also return:
+
+4. **pos_match**: true if the word is the expected part of speech (e.g., a verb when a verb is expected, an adjective when an adjective is expected), false otherwise. A mismatch applies a 0.5x penalty to the final score.
+
+Respond ONLY with a JSON object like: {"exoticness": 7, "suitability": 9, "uniqueness": 8, "pos_match": true}
 Do not include any other text.

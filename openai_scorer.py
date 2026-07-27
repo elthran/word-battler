@@ -59,7 +59,8 @@ def _log_entry(game_id: str, entry: dict):
 
 
 def score_word(sentence: str, word: str, game_id: str = "unknown",
-               played_words: list[str] | None = None) -> dict:
+               played_words: list[str] | None = None,
+               expected_pos: str = "noun") -> dict:
     """Call the OpenAI API to rate a word for a sentence.
 
     Args:
@@ -67,6 +68,7 @@ def score_word(sentence: str, word: str, game_id: str = "unknown",
         word: The word the player chose to fill the blank.
         game_id: A unique identifier for this game session (used for logging).
         played_words: List of words already played this game (for uniqueness rating).
+        expected_pos: The expected part of speech — "noun" or "verb".
 
     Returns:
         A dict with:
@@ -76,6 +78,8 @@ def score_word(sentence: str, word: str, game_id: str = "unknown",
             additive_bonus: int -2 to +3 (mapped from exoticness)
             suitability_multiplier: float 0.75-1.25 (mapped from suitability)
             uniqueness_multiplier: float 0.75-1.25 (mapped from uniqueness)
+            pos_match: bool — whether the word matches the expected part of speech
+            pos_penalty: float — 0.5 if pos mismatch, 0.0 otherwise
     """
     if played_words is None:
         played_words = []
@@ -84,6 +88,7 @@ def score_word(sentence: str, word: str, game_id: str = "unknown",
     user_prompt = (
         f"Sentence: {sentence}\n"
         f"Word: {word}\n"
+        f"Expected part of speech: {expected_pos}\n"
         f"Previously played words: {played_words_str}"
     )
 
@@ -95,6 +100,7 @@ def score_word(sentence: str, word: str, game_id: str = "unknown",
         "timestamp": timestamp,
         "sentence": sentence,
         "word": word,
+        "expected_pos": expected_pos,
         "played_words": played_words,
         "model": _OPENAI_MODEL,
         "system_prompt": SCORING_SYSTEM_PROMPT,
@@ -123,6 +129,7 @@ def score_word(sentence: str, word: str, game_id: str = "unknown",
     exoticness = max(0, min(10, int(data["exoticness"])))
     suitability = max(0, min(10, int(data["suitability"])))
     uniqueness = max(0, min(10, int(data.get("uniqueness", 10))))
+    pos_match = data.get("pos_match", True)  # True if word matches expected POS
 
     # Map exoticness 0-10 → additive bonus -2 to +3
     additive_bonus = round(exoticness / 10 * 5 - 2)
@@ -133,6 +140,9 @@ def score_word(sentence: str, word: str, game_id: str = "unknown",
     # Map uniqueness 0-10 → multiplier 0.75-1.25
     uniqueness_multiplier = 0.75 + uniqueness / 10 * 0.5
 
+    # POS penalty: 0.5x multiplier if the word doesn't match expected part of speech
+    pos_penalty = 0.5 if not pos_match else 0.0
+
     result = {
         "exoticness": exoticness,
         "suitability": suitability,
@@ -140,6 +150,8 @@ def score_word(sentence: str, word: str, game_id: str = "unknown",
         "additive_bonus": additive_bonus,
         "suitability_multiplier": suitability_multiplier,
         "uniqueness_multiplier": uniqueness_multiplier,
+        "pos_match": pos_match,
+        "pos_penalty": pos_penalty,
     }
 
     # Log the response
@@ -163,6 +175,8 @@ def generate_story_round(
     total_rounds: int,
     story_so_far: list[dict],
     game_id: str = "unknown",
+    expects_verb: bool = False,
+    chosen_noun: dict | None = None,
 ) -> dict:
     """Call the OpenAI API to generate flavor text and a prompt for a round.
 
@@ -176,6 +190,8 @@ def generate_story_round(
         story_so_far: List of dicts for previous rounds, each with keys:
             "flavor", "prompt", "word" (the word the player chose).
         game_id: A unique identifier for this game session (used for logging).
+        expects_verb: If True, the blank in the prompt should expect a verb.
+        chosen_noun: If the player chose a noun card, a dict with "word" and "points".
 
     Returns:
         A dict with "flavor" and "prompt" strings.
@@ -191,12 +207,31 @@ def generate_story_round(
         )
     story_text = "\n".join(story_lines) if story_lines else "(This is the first round — no story yet.)"
 
+    if expects_verb:
+        pos_instruction = "The blank [ ______ ] should expect a VERB."
+    else:
+        pos_instruction = "The blank [ ______ ] should expect an ADJECTIVE."
+
+    noun_instruction = ""
+    if chosen_noun:
+        noun_word = chosen_noun["word"]
+        noun_instruction = (
+            f"\nIMPORTANT: The player has chosen the item \"{noun_word}\" to use this round. "
+            f"The prompt sentence MUST include the phrase \"[ ______ ] {noun_word}\" — the blank "
+            f"must be placed directly before the word \"{noun_word}\" so the player's adjective "
+            f"modifies that specific noun. For example: \"You deliver a [ ______ ] {noun_word} strike\" "
+            f"or \"With a [ ______ ] {noun_word}, you attack.\" "
+            f"Do NOT put the blank next to any other noun — it must be adjacent to \"{noun_word}\"."
+        )
+
     user_prompt = (
         f"Encounter: {encounter_name}\n"
         f"Modifier: {modifier_name}\n"
         f"Approach: {approach}\n"
         f"Requirement: {requirement} pts\n"
         f"Round: {round_number} of {total_rounds}\n"
+        f"{pos_instruction}\n"
+        f"{noun_instruction}\n"
         f"\n"
         f"Story so far:\n{story_text}\n"
         f"\n"
@@ -215,6 +250,8 @@ def generate_story_round(
         "requirement": requirement,
         "round_number": round_number,
         "total_rounds": total_rounds,
+        "expects_verb": expects_verb,
+        "chosen_noun": chosen_noun,
         "story_so_far": story_so_far,
         "model": _OPENAI_MODEL,
         "system_prompt": STORY_SYSTEM_PROMPT,

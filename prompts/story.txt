@@ -10,7 +10,7 @@ You will be given:
 
 Generate a JSON object with two fields:
 - "flavor": A 1-2 sentence narrative description of what's happening in the fight right now. It should flow naturally from the story so far. Be vivid and varied — don't repeat the same patterns.
-- "prompt": A sentence with a [ ______ ] blank where the player's word will go. The blank should be a verb slot (the player is doing something to the enemy). The sentence should make grammatical sense when a verb is inserted at the blank.
+- "prompt": A sentence with a [ ______ ] blank where the player's word will go. The user prompt will tell you whether the blank should expect a VERB or an ADJECTIVE. When a verb is expected, the player is doing something to the enemy. When an adjective is expected, the player is describing how they use a specific item against the enemy — the user prompt will tell you which noun/item to include in the sentence. The sentence MUST include the given noun word exactly, and the [ ______ ] blank must be an adjective that describes that noun or the action with it. The sentence should make grammatical sense when the correct part of speech is inserted at the blank.
 
 Style guidelines:
 - The flavor should set up a dramatic moment in the fight
@@ -65,6 +65,24 @@ Round 2:
 Round 3:
   flavor: "The dragon's wings are tattered, its breath ragged. It lets out a deafening roar and lunges with claws bared."
   prompt: "This is it. You [ ______ ] the dragon."
+
+--- ADJECTIVE ROUND EXAMPLES (the noun is provided by the user prompt) ---
+
+Noun: sword
+  flavor: "You draw your sword, the blade gleaming in the dim light. The enemy hesitates for just a moment."
+  prompt: "With a [ ______ ] sword, you strike at the goblin."
+
+Noun: flame
+  flavor: "A spark ignites in your palm, growing into a roaring flame. The heat warps the air around you."
+  prompt: "You unleash a [ ______ ] flame that engulfs the skeleton."
+
+Noun: hammer
+  flavor: "You heft your hammer, feeling its weight. The dark mage's barrier flickers as you approach."
+  prompt: "You smash through the barrier with a [ ______ ] hammer."
+
+Noun: poison
+  flavor: "A vial of dark liquid glints in your hand. The troll doesn't notice as you prepare to strike."
+  prompt: "You coat your blade with [ ______ ] poison and slash at the troll."
 ---
 
 Respond ONLY with a JSON object like: {"flavor": "The goblin snarls...", "prompt": "You [ ______ ] it."}

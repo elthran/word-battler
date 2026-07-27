@@ -9,6 +9,7 @@ from data import (
     ENCOUNTER_POOL, BOSS_POOL,
     MODIFIERS, BOSS_MODIFIERS,
     POTIONS, POTION_KEYS, ACCESSORIES, ACCESSORY_KEYS,
+    NOUN_POOL, STARTING_NOUNS, ENCOUNTER_HP, NOUN_DRAW_COUNT,
 )
 from openai_scorer import score_word, generate_story_round, generate_approaches
 
@@ -72,6 +73,21 @@ class GameEngine:
         self._story_so_far: list[dict] = []       # {flavor, prompt, word} per round
         self._generated_round_data: dict | None = None  # generated flavor/prompt for current round
         self._generated_approaches: dict | None = None  # generated approach descriptions
+
+        # ── Noun-round tracking ──────────────────────────────────────
+        # Exactly 1 of every 3 rounds is a noun round; determined per encounter.
+        # Weighted: 25% round 1, 50% round 2, 100% round 3
+        self._noun_round: int = 0  # 1, 2, or 3 — set when encounter starts
+
+        # ── Noun deck ─────────────────────────────────────────────────
+        self._noun_deck: list[dict] = list(STARTING_NOUNS)
+        self._noun_hand: list[dict] = []   # 3 noun cards drawn for noun round
+        self._chosen_noun: dict | None = None  # the noun the player picked this round
+
+        # ── Encounter HP ──────────────────────────────────────────────
+        self._encounter_hp: int = 0
+        self._encounter_max_hp: int = 0
+        self._bonus_round: bool = False  # True when in the 4th bonus round
 
         random.shuffle(self._deck)
         self._draw_cards(self.hand_size)
@@ -152,6 +168,35 @@ class GameEngine:
         if available:
             self._accessories.append(random.choice(available))
 
+    def _gain_random_noun(self):
+        """Add a random noun card to the noun deck (no duplicates by word)."""
+        existing_words = {n["word"] for n in self._noun_deck}
+        available = [n for n in NOUN_POOL if n["word"] not in existing_words]
+        if available:
+            self._noun_deck.append(random.choice(available))
+
+    def draw_noun_hand(self):
+        """Draw 3 noun cards from the noun deck for a noun round."""
+        self._noun_hand = []
+        available = list(self._noun_deck)
+        random.shuffle(available)
+        self._noun_hand = available[:NOUN_DRAW_COUNT]
+
+    def choose_noun(self, index: int) -> dict | None:
+        """Choose a noun card from the noun hand by index.
+        Removes the card permanently from the noun deck.
+        Regenerates the story prompt to include the chosen noun.
+        Returns the card or None."""
+        if index < 0 or index >= len(self._noun_hand):
+            return None
+        self._chosen_noun = self._noun_hand[index]
+        # Remove from the noun deck permanently
+        chosen_word = self._chosen_noun["word"]
+        self._noun_deck = [n for n in self._noun_deck if n["word"] != chosen_word]
+        # Regenerate story so the prompt includes the chosen noun
+        self._generate_story_for_round()
+        return dict(self._chosen_noun)
+
     # ── Properties ──────────────────────────────────────────────────────
 
     @property
@@ -208,24 +253,69 @@ class GameEngine:
         return self.current_round > self.rounds_per_encounter
 
     @property
+    def expects_verb(self) -> bool:
+        """True when the current round expects a verb (2 of 3 rounds)."""
+        return self.current_round != self._noun_round
+
+    @property
+    def noun_deck(self) -> list[dict]:
+        return list(self._noun_deck)
+
+    @property
+    def noun_hand(self) -> list[dict]:
+        return list(self._noun_hand)
+
+    @property
+    def chosen_noun(self) -> dict | None:
+        return dict(self._chosen_noun) if self._chosen_noun else None
+
+    @property
+    def encounter_hp(self) -> int:
+        return self._encounter_hp
+
+    @property
+    def encounter_max_hp(self) -> int:
+        return self._encounter_max_hp
+
+    @property
+    def is_bonus_round(self) -> bool:
+        return self._bonus_round
+
+    @property
     def current_round_data(self) -> dict | None:
         """Return the dict for the current round (flavor, prompt, requirements).
 
         If story generation produced custom flavor/prompt, those override the
         static data.  Otherwise falls back to the static encounter data.
+        For bonus round 4, reuses round 3's data as a template.
         """
         if self.current_encounter is None:
             return None
         rounds = self.current_encounter.get("rounds", [])
         idx = self.current_round - 1
-        if 0 <= idx < len(rounds):
+        # Bonus round: reuse the last round's data
+        if idx >= len(rounds):
+            if rounds:
+                rd = dict(rounds[-1])
+                rd["flavor"] = f"The {self.encounter_name} is barely standing! One final push..."
+                rd["prompt"] = rd.get("prompt", "You [ ______ ] it.")
+            else:
+                return None
+        elif 0 <= idx < len(rounds):
             rd = dict(rounds[idx])
-            # Override with generated story if available
-            if self._generated_round_data is not None:
-                rd["flavor"] = self._generated_round_data.get("flavor", rd.get("flavor", ""))
-                rd["prompt"] = self._generated_round_data.get("prompt", rd.get("prompt", ""))
-            return rd
-        return None
+        else:
+            return None
+        # Override with generated story if available
+        if self._generated_round_data is not None:
+            rd["flavor"] = self._generated_round_data.get("flavor", rd.get("flavor", ""))
+            rd["prompt"] = self._generated_round_data.get("prompt", rd.get("prompt", ""))
+        # For noun rounds, inject the chosen noun into the prompt if not already there
+        if not self.expects_verb and self._chosen_noun:
+            noun_word = self._chosen_noun["word"]
+            prompt = rd.get("prompt", "")
+            if noun_word not in prompt:
+                rd["prompt"] = f"You ready your {noun_word} and deliver a [ ______ ] blow!"
+        return rd
 
     @property
     def encounter_name(self) -> str:
@@ -288,21 +378,34 @@ class GameEngine:
         any side effects.  Returns the same shape as ``_check_modifier``::
 
             {"violated": bool, "penalty": int, "message": str, "type": str}
-        """
-        return self._check_modifier(word, word)
 
-    def preview_openai_score(self, word: str) -> dict | None:
+        Resolves wildcards where possible so that vowel/consonant checks
+        work correctly during preview.
+        """
+        resolved = self._resolve_wildcards(word.lower()) or word.lower()
+        return self._check_modifier(word, resolved)
+
+    def preview_openai_score(self, word: str, resolved_word: str | None = None) -> dict | None:
         """
         Call the OpenAI API to score *word* without consuming cards or
         advancing the game state.  Resolves wildcards first.
+
+        *resolved_word* is the fully resolved word (wildcards replaced with
+        chosen letters). If not provided, the engine resolves wildcards
+        automatically (first dictionary match).
 
         Returns the same dict as ``score_word()``, or ``None`` if the
         word cannot be resolved to a valid dictionary word.
         """
         w = word.lower()
-        resolved = self._resolve_wildcards(w)
-        if resolved is None:
-            return None
+        if resolved_word is not None:
+            resolved = resolved_word.lower()
+            if resolved not in self._valid_words:
+                return None
+        else:
+            resolved = self._resolve_wildcards(w)
+            if resolved is None:
+                return None
 
         rd = self.current_round_data
         if rd is None:
@@ -313,6 +416,7 @@ class GameEngine:
             return score_word(
                 sentence, resolved, game_id=self.game_id,
                 played_words=self._played_words,
+                expected_pos="verb" if self.expects_verb else "adjective",
             )
         except Exception:
             return None
@@ -329,22 +433,51 @@ class GameEngine:
         self.current_approach = None
         self.current_requirement = 0
         self.current_round = 1
+        self._bonus_round = False
         self._story_so_far = []
         self._generated_round_data = None
         self._generated_approaches = None
+        self._chosen_noun = None
+        # Set encounter HP from data
+        enc_name = self.current_encounter.get("name", "")
+        self._encounter_max_hp = ENCOUNTER_HP.get(enc_name, 25)
+        self._encounter_hp = self._encounter_max_hp
+        # Pick which round (1-3) is the noun round with weighted probability:
+        # 25% round 1, 50% round 2, 100% round 3
+        roll = random.random()
+        if roll < 0.25:
+            self._noun_round = 1
+        elif roll < 0.75:
+            self._noun_round = 2
+        else:
+            self._noun_round = 3
         self._generate_approaches_for_encounter()
         return dict(self.current_encounter)
 
     def advance_round(self):
         """Move to the next round.  If the encounter is finished, increment
-        ``encounters_cleared`` and grant rewards."""
+        ``encounters_cleared`` and grant rewards.  If encounter HP > 0 after
+        round 3, trigger a bonus 4th round.  If HP > 0 after round 4, game over."""
         self.current_round += 1
+        self._chosen_noun = None  # clear noun card for next round
         if self.is_encounter_finished:
+            # Check if encounter HP is still above 0 — bonus round!
+            if self._encounter_hp > 0 and not self._bonus_round:
+                self._bonus_round = True
+                self.rounds_per_encounter = 4
+                # Don't advance — we're in the bonus round now
+                return
+            # Bonus round finished but encounter still alive — instant death
+            if self._bonus_round and self._encounter_hp > 0:
+                self.hp = 0
+                return
             self.encounters_cleared += 1
+            self.rounds_per_encounter = ROUNDS_PER_ENCOUNTER  # reset for next encounter
             # Grant post-encounter rewards (not after boss/victory)
             if not self.is_victory:
                 self._maybe_gain_potion()
                 self._gain_random_accessory()
+                self._gain_random_noun()
 
     def _generate_story_for_round(self):
         """Call the OpenAI API to generate dynamic flavor/prompt for the current round.
@@ -364,7 +497,8 @@ class GameEngine:
         rounds = enc.get("rounds", [])
         idx = self.current_round - 1
         if idx < 0 or idx >= len(rounds):
-            return
+            # Bonus round — still try to generate story
+            pass
 
         try:
             result = generate_story_round(
@@ -373,9 +507,11 @@ class GameEngine:
                 approach=self.current_approach or "aggressive",
                 requirement=self.current_requirement,
                 round_number=self.current_round,
-                total_rounds=len(rounds),
+                total_rounds=self.rounds_per_encounter,
                 story_so_far=self._story_so_far,
                 game_id=self.game_id,
+                expects_verb=self.expects_verb,
+                chosen_noun=self._chosen_noun,
             )
             if result.get("flavor") and result.get("prompt"):
                 self._generated_round_data = result
@@ -446,19 +582,26 @@ class GameEngine:
         self.current_approach = approach
         self.current_requirement = max(1, base)
 
-        # Generate story for this round now that we know the approach
-        self._generate_story_for_round()
+        # Generate story for this round now that we know the approach.
+        # For noun rounds, skip — story is generated later in choose_noun()
+        # when we know which noun the player picked.
+        if self.expects_verb:
+            self._generate_story_for_round()
 
         return self.current_requirement
 
     # ── Word play ───────────────────────────────────────────────────────
 
-    def play_word(self, word: str, cached_openai_result: dict | None = None) -> dict:
+    def play_word(self, word: str, cached_openai_result: dict | None = None,
+                  resolved_word: str | None = None) -> dict:
         """
         Validate *word* against the dictionary and the current hand,
         calculate the score, apply damage, and refresh the hand.
 
         *word* may contain ``'*'`` characters representing wildcards.
+        *resolved_word* is the fully resolved word (wildcards replaced with
+        chosen letters). If not provided, the engine resolves wildcards
+        automatically (first dictionary match).
 
         If *cached_openai_result* is provided (from a preview call), the
         OpenAI API is not called again — the cached values are used instead.
@@ -491,17 +634,30 @@ class GameEngine:
             }
 
         # 2.  Is it a real English word (resolving wildcards)?
-        resolved = self._resolve_wildcards(w)
-        if resolved is None:
-            self.hp = max(0, self.hp - 1)
-            return {
-                "valid": False,
-                "error": f"'{word}' is not a valid English word.",
-                "score": 0, "requirement": self.current_requirement,
-                "damage_to_player": 1, "resolved_word": None,
-                "round_success": False,
-                "narrative": f"'{word}' is not a word! You take 1 damage and must try again.",
-            }
+        if resolved_word is not None:
+            resolved = resolved_word.lower()
+            if resolved not in self._valid_words:
+                self.hp = max(0, self.hp - 1)
+                return {
+                    "valid": False,
+                    "error": f"'{resolved}' is not a valid English word.",
+                    "score": 0, "requirement": self.current_requirement,
+                    "damage_to_player": 1, "resolved_word": None,
+                    "round_success": False,
+                    "narrative": f"'{resolved}' is not a word! You take 1 damage and must try again.",
+                }
+        else:
+            resolved = self._resolve_wildcards(w)
+            if resolved is None:
+                self.hp = max(0, self.hp - 1)
+                return {
+                    "valid": False,
+                    "error": f"'{word}' is not a valid English word.",
+                    "score": 0, "requirement": self.current_requirement,
+                    "damage_to_player": 1, "resolved_word": None,
+                    "round_success": False,
+                    "narrative": f"'{word}' is not a word! You take 1 damage and must try again.",
+                }
 
         # 3.  Score
         score = self.calculate_score(w)
@@ -526,7 +682,9 @@ class GameEngine:
         openai_bonus = {
             "exoticness": 0, "suitability": 0, "uniqueness": 0,
             "additive_bonus": 0, "suitability_multiplier": 1.0, "uniqueness_multiplier": 1.0,
+            "pos_match": True, "pos_penalty": 0.0,
         }
+        expected_pos = "verb"
         if cached_openai_result is not None:
             openai_bonus = cached_openai_result
         else:
@@ -537,6 +695,7 @@ class GameEngine:
                     openai_result = score_word(
                         sentence, resolved, game_id=self.game_id,
                         played_words=self._played_words,
+                        expected_pos=expected_pos,
                     )
                     openai_bonus = openai_result
             except Exception:
@@ -545,13 +704,19 @@ class GameEngine:
         additive_bonus = openai_bonus["additive_bonus"]
         suitability_mult = openai_bonus["suitability_multiplier"]
         uniqueness_mult = openai_bonus["uniqueness_multiplier"]
+        pos_penalty = openai_bonus.get("pos_penalty", 0.0)
 
-        # Apply additive bonus first, then both multipliers
+        # Apply additive bonus first, then both multipliers, then wrong word type penalty
         effective_score = max(0, int((effective_score + additive_bonus) * suitability_mult * uniqueness_mult))
+        if pos_penalty > 0:
+            effective_score = max(0, int(effective_score * pos_penalty))
 
         # 4.  Damage (based on effective score after modifier penalty)
         damage = max(0, self.current_requirement - effective_score)
         self.hp = max(0, self.hp - damage)
+
+        # 4b. Reduce encounter HP by effective score
+        self._encounter_hp = max(0, self._encounter_hp - effective_score)
 
         # 5.  Discard used cards & draw back to hand size
         self._discard_used_cards(w)
@@ -573,6 +738,162 @@ class GameEngine:
             })
 
         # 8.  Generate narrative
+        narrative = self._narrative_result(round_success, damage)
+
+        return {
+            "valid": True, "error": None,
+            "score": score, "effective_score": effective_score,
+            "requirement": self.current_requirement,
+            "damage_to_player": damage, "resolved_word": resolved,
+            "round_success": round_success, "narrative": narrative,
+            "modifier_violated": modifier_result["violated"],
+            "modifier_penalty": modifier_penalty,
+            "modifier_message": modifier_result["message"],
+            "openai_bonus": openai_bonus,
+        }
+
+    def play_noun(self, word: str, cached_openai_result: dict | None = None,
+                  resolved_word: str | None = None) -> dict:
+        """
+        Play a word during a noun round. The player has already chosen a noun
+        card (via ``choose_noun``), and now plays an **adjective** from their
+        hand.  The noun card's points are added to the effective score.
+
+        *resolved_word* is the fully resolved word (wildcards replaced with
+        chosen letters). If not provided, the engine resolves wildcards
+        automatically (first dictionary match).
+
+        Returns the same dict shape as ``play_word``.
+        """
+        if self._chosen_noun is None:
+            return {
+                "valid": False, "error": "No noun card chosen.",
+                "score": 0, "requirement": self.current_requirement,
+                "damage_to_player": 0, "resolved_word": None,
+                "round_success": False,
+                "narrative": "You must choose a noun card first.",
+            }
+
+        w = word.lower()
+
+        # 1.  Can the word be formed from the current hand?
+        hand_ok = self._can_form_from_hand(w)
+        if not hand_ok["valid"]:
+            self.hp = max(0, self.hp - 1)
+            return {
+                "valid": False, "error": hand_ok["error"],
+                "score": 0, "requirement": self.current_requirement,
+                "damage_to_player": 1, "resolved_word": None,
+                "round_success": False,
+                "narrative": f"Invalid word! You take 1 damage and must try again.",
+            }
+
+        # 2.  Is it a real English word?
+        if resolved_word is not None:
+            resolved = resolved_word.lower()
+            if resolved not in self._valid_words:
+                self.hp = max(0, self.hp - 1)
+                return {
+                    "valid": False,
+                    "error": f"'{resolved}' is not a valid English word.",
+                    "score": 0, "requirement": self.current_requirement,
+                    "damage_to_player": 1, "resolved_word": None,
+                    "round_success": False,
+                    "narrative": f"'{resolved}' is not a word! You take 1 damage and must try again.",
+                }
+        else:
+            resolved = self._resolve_wildcards(w)
+            if resolved is None:
+                self.hp = max(0, self.hp - 1)
+                return {
+                    "valid": False,
+                    "error": f"'{word}' is not a valid English word.",
+                    "score": 0, "requirement": self.current_requirement,
+                    "damage_to_player": 1, "resolved_word": None,
+                    "round_success": False,
+                    "narrative": f"'{word}' is not a word! You take 1 damage and must try again.",
+                }
+
+        # 3.  Score
+        score = self.calculate_score(w)
+
+        # 3b. Modifier check
+        modifier_result = self._check_modifier(w, resolved)
+        if modifier_result["violated"] and modifier_result.get("type") == "blocking":
+            self.hp = max(0, self.hp - 1)
+            return {
+                "valid": False, "error": modifier_result["message"],
+                "score": 0, "requirement": self.current_requirement,
+                "damage_to_player": 1, "resolved_word": None,
+                "round_success": False,
+                "narrative": f"Rule broken! {modifier_result['detail']} You take 1 damage and must try again.",
+            }
+
+        modifier_penalty = modifier_result["penalty"] if modifier_result["violated"] else 0
+        effective_score = max(0, score - modifier_penalty)
+
+        # 3c. OpenAI scoring
+        openai_bonus = {
+            "exoticness": 0, "suitability": 0, "uniqueness": 0,
+            "additive_bonus": 0, "suitability_multiplier": 1.0, "uniqueness_multiplier": 1.0,
+            "pos_match": True, "pos_penalty": 0.0,
+        }
+        if cached_openai_result is not None:
+            openai_bonus = cached_openai_result
+        else:
+            try:
+                rd = self.current_round_data
+                if rd:
+                    sentence = rd.get("prompt", "")
+                    openai_result = score_word(
+                        sentence, resolved, game_id=self.game_id,
+                        played_words=self._played_words,
+                        expected_pos="adjective",
+                    )
+                    openai_bonus = openai_result
+            except Exception:
+                pass
+
+        additive_bonus = openai_bonus["additive_bonus"]
+        suitability_mult = openai_bonus["suitability_multiplier"]
+        uniqueness_mult = openai_bonus["uniqueness_multiplier"]
+        pos_penalty = openai_bonus.get("pos_penalty", 0.0)
+
+        effective_score = max(0, int((effective_score + additive_bonus) * suitability_mult * uniqueness_mult))
+        if pos_penalty > 0:
+            effective_score = max(0, int(effective_score * pos_penalty))
+
+        # 3d. Add noun card points
+        noun_points = self._chosen_noun.get("points", 0)
+        effective_score += noun_points
+
+        # 4.  Damage
+        damage = max(0, self.current_requirement - effective_score)
+        self.hp = max(0, self.hp - damage)
+
+        # 4b. Reduce encounter HP
+        self._encounter_hp = max(0, self._encounter_hp - effective_score)
+
+        # 5.  Discard used cards & draw back
+        self._discard_used_cards(w)
+        self._draw_cards(self.hand_size - len(self._hand))
+
+        # 6.  Track round success
+        round_success = effective_score >= self.current_requirement
+
+        # 7.  Track played word
+        self._played_words.append(resolved)
+
+        # 7b. Record in story
+        rd = self.current_round_data
+        if rd:
+            self._story_so_far.append({
+                "flavor": rd.get("flavor", ""),
+                "prompt": rd.get("prompt", ""),
+                "word": resolved,
+            })
+
+        # 8.  Narrative
         narrative = self._narrative_result(round_success, damage)
 
         return {

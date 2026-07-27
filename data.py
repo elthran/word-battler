@@ -26,6 +26,66 @@ HAND_SIZE: int = 8
 MAX_HP: int = 10
 ENCOUNTERS_BEFORE_BOSS: int = 3   # 3 normal encounters, then the boss
 ROUNDS_PER_ENCOUNTER: int = 3
+NOUN_DRAW_COUNT: int = 3          # number of noun cards drawn per noun round
+
+# ── Noun deck ───────────────────────────────────────────────────────────────
+# Each noun card is a dict: {word, points, description}
+# The player starts with 3 and gains 1 after each encounter.
+
+STARTING_NOUNS: list[dict] = [
+    {"word": "sword", "points": 10, "description": "A trusty blade"},
+    {"word": "rock", "points": 5, "description": "A hefty stone"},
+    {"word": "fist", "points": 3, "description": "Your bare hands"},
+]
+
+NOUN_POOL: list[dict] = [
+    {"word": "axe", "points": 9, "description": "A heavy battle axe"},
+    {"word": "spear", "points": 8, "description": "A long piercing spear"},
+    {"word": "hammer", "points": 9, "description": "A crushing war hammer"},
+    {"word": "dagger", "points": 6, "description": "A quick stabbing dagger"},
+    {"word": "staff", "points": 7, "description": "A sturdy wooden staff"},
+    {"word": "bow", "points": 7, "description": "A ranged hunting bow"},
+    {"word": "shield", "points": 5, "description": "A defensive shield"},
+    {"word": "flame", "points": 8, "description": "A burst of magical fire"},
+    {"word": "frost", "points": 8, "description": "A blast of freezing ice"},
+    {"word": "lightning", "points": 10, "description": "A crackling bolt of lightning"},
+    {"word": "poison", "points": 7, "description": "A vial of deadly poison"},
+    {"word": "shadow", "points": 6, "description": "A cloak of living shadow"},
+    {"word": "chain", "points": 6, "description": "A length of iron chain"},
+    {"word": "net", "points": 4, "description": "A weighted throwing net"},
+    {"word": "bomb", "points": 9, "description": "An explosive black-powder bomb"},
+    {"word": "trap", "points": 5, "description": "A hidden snare trap"},
+    {"word": "caltrops", "points": 4, "description": "Scattered iron caltrops"},
+    {"word": "oil", "points": 4, "description": "A flask of slippery oil"},
+    {"word": "acid", "points": 7, "description": "A vial of corrosive acid"},
+    {"word": "smoke", "points": 3, "description": "A thick smoke bomb"},
+    {"word": "mirror", "points": 4, "description": "A polished silver mirror"},
+    {"word": "bell", "points": 3, "description": "A resonant iron bell"},
+    {"word": "rope", "points": 4, "description": "A coil of sturdy rope"},
+    {"word": "hook", "points": 5, "description": "A sharp grappling hook"},
+    {"word": "candle", "points": 3, "description": "A blessed wax candle"},
+    {"word": "salt", "points": 3, "description": "A pouch of purifying salt"},
+    {"word": "dust", "points": 3, "description": "A handful of blinding dust"},
+    {"word": "thorn", "points": 4, "description": "A bundle of barbed thorns"},
+    {"word": "vine", "points": 4, "description": "A length of strangling vine"},
+    {"word": "sand", "points": 3, "description": "A pouch of coarse sand"},
+]
+
+# ── Encounter HP ─────────────────────────────────────────────────────────────
+# Each encounter has its own HP pool. The player's score each round reduces it.
+# If HP > 0 after 3 rounds, a bonus 4th round triggers.
+
+ENCOUNTER_HP: dict[str, int] = {
+    "Goblin": 25,
+    "Skeleton": 28,
+    "Dark Mage": 30,
+    "Troll": 35,
+    "Bandit": 26,
+    "Spider": 27,
+    "Ghost": 28,
+    "Dragon": 50,
+    "Lich King": 48,
+}
 
 # ── Archetypes ───────────────────────────────────────────────────────────────
 ARCHETYPES: dict[str, dict] = {
